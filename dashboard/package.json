@@ -1,0 +1,26 @@
+{
+  "name": "dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Terminal dashboard for Klipper/Moonraker 3D printers",
+  "scripts": {
+    "dev": "tsx watch src/index.tsx",
+    "start": "tsx src/index.tsx",
+    "debug": "tsx src/debug.ts",
+    "preview": "tsx src/chart-preview.ts",
+    "build": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@jhyland87/moonraker-client": "workspace:*",
+    "react": "^19.1.1",
+    "react-curse": "^1.0.23"
+  },
+  "devDependencies": {
+    "@types/node": "^25.7.0",
+    "@types/react": "^19.1.11",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

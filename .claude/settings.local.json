@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(pnpm --filter dashboard typecheck)",
+      "Bash(pnpm --filter dashboard preview)",
+      "Bash(perl -i -pe 's|^\\( *\\)/\\\\*\\\\* \\(.+?\\) \\\\*/[ \\\\t]*$|$1/**\\\\n$1 * $2\\\\n$1 */|' src/*.ts)",
+      "Bash(cat /tmp/docs.out | head -40; echo \"---\"; ls /Users/justinhyland/Documents/projects/moonraker-client/docs 2>&1 | head -10)",
+      "Bash(./node_modules/.bin/typedoc)",
+      "Bash(echo \"EXIT:$?\")",
+      "Read(//tmp/**)",
+      "Bash(perl -i -pe \"s|\\(from '\\\\\\\\..*?\\)\\\\\\\\.js'|\\\\$1.ts'|g\" moonraker-client/src/*.ts moonraker-client/examples/*.ts dashboard/src/*.ts dashboard/src/*.tsx dashboard/src/**/*.ts dashboard/src/**/*.tsx)",
+      "Bash(pnpm -r typecheck)",
+      "Bash(pnpm --filter @jhyland87/moonraker-client typecheck:examples)",
+      "Bash(pnpm --filter @jhyland87/moonraker-client clean)",
+      "Bash(pnpm --filter @jhyland87/moonraker-client build)",
+      "Bash(cp moonraker-client/tsconfig.json /Users/justinhyland/Documents/projects/moonraker-client/tsconfig.json)",
+      "Bash(cp moonraker-client/src/*.ts /Users/justinhyland/Documents/projects/moonraker-client/src/)",
+      "Bash(cp moonraker-client/examples/*.ts /Users/justinhyland/Documents/projects/moonraker-client/examples/)",
+      "Bash(pnpm typecheck *)",
+      "Bash(pnpm typecheck:examples)",
+      "Bash(pnpm build *)"
+    ]
+  }
+}

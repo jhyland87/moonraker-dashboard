@@ -1,0 +1,4 @@
+[submodule "moonraker-client"]
+	path = moonraker-client
+	url = https://github.com/jhyland87/moonraker-client.git
+	branch = main
