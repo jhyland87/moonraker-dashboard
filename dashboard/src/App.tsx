@@ -2,26 +2,14 @@ import type { MoonrakerClient } from '@jhyland87/moonraker-client';
 import { useCallback, useMemo, useState } from 'react';
 import { useInput, useSize } from 'react-curse';
 
-import { AsciiLineChart } from './components/AsciiLineChart';
 import { BedMeshPanel } from './components/BedMeshPanel';
 import { ConsolePanel } from './components/ConsolePanel';
 import { ErrorPanel, ERROR_PANEL_HEIGHT } from './components/ErrorPanel';
-import {
-  PrintStatusPanel,
-  PRINT_PANEL_HEIGHT,
-  PRINT_PANEL_MIN,
-  PRINT_PANEL_GAP,
-  computePanelGeometry,
-} from './components/PrintStatusPanel';
-import { SensorTable, SENSOR_TABLE_WIDTH, sensorTableHeight } from './components/SensorTable';
+import { PrintStatusPanel, PRINT_PANEL_HEIGHT } from './components/PrintStatusPanel';
+import { SensorTable, sensorTableHeight } from './components/SensorTable';
 import { StatusBar } from './components/StatusBar';
-import {
-  SystemStatsPanel,
-  SYSTEM_PANEL_GAP,
-  SYSTEM_PANEL_HEIGHT,
-  computeSystemPanelGeometry,
-} from './components/SystemStatsPanel';
-import type { ChartSeries } from './chart/index';
+import { SystemStatsPanel, SYSTEM_PANEL_HEIGHT } from './components/SystemStatsPanel';
+import { TemperatureChartPanel } from './components/TemperatureChartPanel';
 import type { DashboardConfig } from './config/index';
 import { useBedMesh } from './hooks/useBedMesh';
 import { useGcodeConsole } from './hooks/useGcodeConsole';
@@ -30,72 +18,55 @@ import { useMachineProcStats } from './hooks/useMachineProcStats';
 import { useMoonrakerSensors } from './hooks/useMoonrakerSensors';
 import { usePrintStatus } from './hooks/usePrintStatus';
 import { usePrinterErrors } from './hooks/usePrinterErrors';
+import { computeHeaderLayout, findSlot } from './services/headerLayout';
 import { restoreTerminalNow } from './terminal';
-import type { SensorConfig, SensorsState } from './types/index';
 
-interface AppProps {
+/**
+ * Props for the {@link App} root component.
+ * @source
+ */
+export interface AppProps {
   readonly client: MoonrakerClient;
   readonly config: DashboardConfig;
 }
 
 /**
- * Build the chart series.
- *
- * Drawing order matches `status.graph` in moonraker-cli:
- *   1. All target lines first (back layer), in reverse table order so the first
- *      table row's target sits on top within the target group.
- *   2. All current-temp lines next (front layer), same reverse order so the
- *      first table row's temp sits on top overall.
- *
- * Net effect: targets never overdraw any current line, and `sensors[0]` is the
- * most prominent series.
+ * Single row reserved for the {@link StatusBar} at `y = 0`.
  */
-const buildSeries = (
-  state: SensorsState,
-  configs: readonly SensorConfig[],
-  hidden: ReadonlySet<string>,
-): readonly ChartSeries[] => {
-  const series: ChartSeries[] = [];
-
-  for (let i = configs.length - 1; i >= 0; i--) {
-    const cfg = configs[i]!;
-    if (!cfg.hasTarget) continue;
-    if (hidden.has(cfg.toggleKey)) continue;
-    const sensor = state[cfg.objectName];
-    if (!sensor) continue;
-    series.push({
-      name: `${cfg.label} tgt`,
-      color: cfg.dimColor,
-      values: sensor.samples.map((s) => s.target),
-      timestamps: sensor.samples.map((s) => s.timestamp),
-    });
-  }
-
-  for (let i = configs.length - 1; i >= 0; i--) {
-    const cfg = configs[i]!;
-    if (hidden.has(cfg.toggleKey)) continue;
-    const sensor = state[cfg.objectName];
-    if (!sensor) continue;
-    series.push({
-      name: cfg.label,
-      color: cfg.color,
-      values: sensor.samples.map((s) => s.temperature),
-      timestamps: sensor.samples.map((s) => s.timestamp),
-    });
-  }
-
-  return series;
-};
-
-const CHART_THEME = {
-  axisColor: 'BrightBlack',
-  labelColor: 'BrightBlack',
-  timeColor: 'BrightBlack',
-} as const;
-
 const STATUSBAR_HEIGHT = 1;
+
+/**
+ * Blank row between the top header block (sensor table / print status /
+ * system stats) and the main chart area.
+ */
 const TABLE_BOTTOM_GAP = 1;
 
+/**
+ * Root dashboard component.
+ *
+ * Composition responsibilities:
+ *  - Owns the websocket client + every domain hook (sensors, gcode console,
+ *    print status, etc.).
+ *  - Owns interactive UI state: which overlay (console / bed mesh) is open,
+ *    which sensor toggles are active, console-input-focus mirror, etc.
+ *  - Computes per-frame geometry by combining the configured header layout
+ *    with the {@link useSize} terminal dimensions, then renders each panel
+ *    at its resolved `(x, y, width, height)`.
+ *
+ * Routing notes for keyboard input:
+ *  - Ctrl-C always quits (final escape hatch).
+ *  - When the console input is focused, App's handler bails entirely so
+ *    every keystroke goes to the input draft.
+ *  - When the console is open in view mode, `q`/`c` are owned by the
+ *    console (close it) rather than the App.
+ *  - `h` toggles the bed mesh overlay; Esc closes it when open.
+ *  - Per-sensor toggle keys (configured in {@link DashboardConfig.sensors})
+ *    hide/show their chart series and dim their table row.
+ *
+ * @param props - See {@link AppProps}.
+ * @returns The full dashboard view.
+ * @source
+ */
 export const App = ({ client, config }: AppProps) => {
   const { width, height } = useSize();
   const { sensors, status } = useMoonrakerSensors(client, config);
@@ -189,11 +160,6 @@ export const App = ({ client, config }: AppProps) => {
     [consoleInputFocused, consoleOpen, bedMeshOpen, bedMesh, toggleKeys, client],
   );
 
-  const series = useMemo(
-    () => buildSeries(sensors, config.sensors, hidden),
-    [sensors, config.sensors, hidden],
-  );
-
   // Stable callbacks for ConsolePanel — its `useInput` deps include these
   // (so it sees current values), and stable refs prevent unnecessary
   // re-registration of the keystroke listener on every App render.
@@ -229,43 +195,43 @@ export const App = ({ client, config }: AppProps) => {
     : 0;
   const chartHeight = Math.max(8, availableForChartAndConsole - consoleHeight);
 
-  // Three-column header layout:
-  //   [SensorTable] [PrintStatusPanel] [SystemStatsPanel]
-  //
-  // The system panel right-aligns to the terminal edge if the row can
-  // accommodate both panels alongside the sensor table. If the screen is too
-  // narrow for all three, we fall back to the older two-column layout
-  // (sensor + print only).
-  const systemLeftEdge = SENSOR_TABLE_WIDTH + PRINT_PANEL_GAP + PRINT_PANEL_MIN + SYSTEM_PANEL_GAP;
-  const systemPanelGeom = computeSystemPanelGeometry(width, systemLeftEdge);
-  const printRightBound = systemPanelGeom ? systemPanelGeom.x - SYSTEM_PANEL_GAP : width;
-  const printPanelGeom = computePanelGeometry(printRightBound, SENSOR_TABLE_WIDTH);
+  // Header row layout is driven by config.layout.header. Each kind resolves
+  // to either a {x, width} block or `null` if it didn't fit.
+  const headerLayout = useMemo(
+    () => computeHeaderLayout(width, config.layout.header),
+    [width, config.layout.header],
+  );
+  const sensorSlot = findSlot(headerLayout, 'sensor-table');
+  const printSlot = findSlot(headerLayout, 'print-status');
+  const systemSlot = findSlot(headerLayout, 'system-stats');
 
   return (
     <>
       <StatusBar status={status} host={host} y={0} width={width} />
-      <SensorTable
-        configs={config.sensors}
-        sensors={sensors}
-        hidden={hidden}
-        y={tableY}
-        width={width}
-      />
-      {printPanelGeom && (
+      {sensorSlot && (
+        <SensorTable
+          configs={config.sensors}
+          sensors={sensors}
+          hidden={hidden}
+          y={tableY}
+          width={sensorSlot.x + sensorSlot.width}
+        />
+      )}
+      {printSlot && (
         <PrintStatusPanel
           status={printStatus}
           y={tableY}
-          x={printPanelGeom.x}
-          width={printPanelGeom.width}
+          x={printSlot.x}
+          width={printSlot.width}
         />
       )}
-      {systemPanelGeom && (
+      {systemSlot && (
         <SystemStatsPanel
           procStats={procStats}
           klipper={klipperStats}
           y={tableY}
-          x={systemPanelGeom.x}
-          width={systemPanelGeom.width}
+          x={systemSlot.x}
+          width={systemSlot.width}
         />
       )}
       {bedMeshOpen ? (
@@ -278,13 +244,14 @@ export const App = ({ client, config }: AppProps) => {
           height={chartHeight}
         />
       ) : (
-        <AsciiLineChart
-          series={series}
+        <TemperatureChartPanel
+          sensors={sensors}
+          configs={config.sensors}
+          hidden={hidden}
           width={width}
           height={chartHeight}
           x={0}
           y={chartY}
-          theme={CHART_THEME}
         />
       )}
       {consoleOpen && (

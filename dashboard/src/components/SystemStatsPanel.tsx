@@ -2,6 +2,13 @@ import { Text } from 'react-curse';
 
 import type { KlipperStats } from '../hooks/useKlipperStats';
 import type { MachineProcStats, TimedSample } from '../hooks/useMachineProcStats';
+import {
+  fmtBandwidth,
+  fmtMemory,
+  fmtPercent as fmtPct,
+  fmtUptime,
+  truncate,
+} from '../services/format';
 
 /**
  * System resource panel modeled after Fluidd's "System Utilization" card.
@@ -115,32 +122,16 @@ const oneRowBars = (
   );
 };
 
-const fmtMemory = (kb: number | undefined): string => {
-  if (kb === undefined) return '—';
-  if (kb >= 1024) return `${Math.round(kb / 1024)} MB`;
-  return `${kb} KB`;
-};
-
-const fmtBandwidth = (bytesPerSec: number): string => {
-  if (bytesPerSec >= 1_000_000) return `${(bytesPerSec / 1_000_000).toFixed(1)} MB/s`;
-  if (bytesPerSec >= 1000) return `${(bytesPerSec / 1000).toFixed(1)} KB/s`;
-  return `${Math.round(bytesPerSec)} B/s`;
-};
-
-const fmtUptime = (sec: number | undefined): string => {
-  if (sec === undefined || sec <= 0) return '—';
-  const s = Math.floor(sec);
-  const d = Math.floor(s / 86400);
-  const h = Math.floor((s % 86400) / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-};
-
-const fmtPct = (v: number | undefined, digits = 2): string =>
-  v === undefined ? '—' : `${v.toFixed(digits)}%`;
-
+/**
+ * Pick the network interface most likely to be "the" main connection —
+ * the non-loopback interface with the highest current bandwidth. When
+ * everything is quiet, the highest cumulative rx/tx interface still wins.
+ *
+ * @param network - Network stats keyed by interface name.
+ * @returns The chosen interface name + bandwidth, or `null` if nothing
+ *          non-loopback exists.
+ * @source
+ */
 const pickNetwork = (
   network: MachineProcStats['network'],
 ): { name: string; bandwidth: number } | null => {
@@ -153,9 +144,6 @@ const pickNetwork = (
   }
   return pick;
 };
-
-const truncate = (s: string, max: number): string =>
-  s.length <= max ? s : `${s.slice(0, Math.max(0, max - 1))}…`;
 
 interface SystemStatsPanelProps {
   readonly procStats: MachineProcStats;

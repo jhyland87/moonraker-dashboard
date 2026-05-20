@@ -1,8 +1,9 @@
 import { Text } from 'react-curse';
 
 import type { BedMeshData } from '../hooks/useBedMesh';
+import { interpolateMesh, meshValToHex } from '../services/bedMesh';
+import { fmtFixed } from '../services/format';
 import { toSubscript, toSuperscript } from '../services/unicodeCase';
-import { meshValToHex } from './bedMeshColors';
 
 /**
  * Bed mesh visualization, modeled on `bed.mesh()` /
@@ -38,36 +39,23 @@ interface BedMeshPanelProps {
   readonly height: number;
 }
 
-const fmt = (v: number, digits: number): string => v.toFixed(digits);
+/**
+ * Wrapper around {@link fmtFixed} that returns an empty string for
+ * `undefined`. The bed-mesh metadata grid prefers showing nothing rather
+ * than the em-dash placeholder when a value is missing.
+ *
+ * @param v - The value to format.
+ * @param digits - Digits after the decimal point.
+ * @returns Either the formatted number, or `''` when missing.
+ * @source
+ */
+const fmt = (v: number | undefined, digits: number): string =>
+  v === undefined ? '' : fmtFixed(v, digits);
 
-const interpolate = (matrix: readonly (readonly number[])[]): number[][] => {
-  const rows = matrix.length;
-  const cols = matrix[0]?.length ?? 0;
-  if (rows === 0 || cols === 0) return [];
-  const newRows = rows * 2 - 1;
-  const newCols = cols * 2 - 1;
-  const out: number[][] = Array.from({ length: newRows }, () =>
-    new Array<number>(newCols).fill(0),
-  );
-  for (let r = 0; r < rows; r++) {
-    const dstRow = out[r * 2]!;
-    const srcRow = matrix[r]!;
-    for (let c = 0; c < cols; c++) dstRow[c * 2] = srcRow[c]!;
-    for (let c = 0; c < cols - 1; c++) {
-      dstRow[c * 2 + 1] = (srcRow[c]! + srcRow[c + 1]!) / 2;
-    }
-  }
-  for (let r = 0; r < rows - 1; r++) {
-    const above = out[r * 2]!;
-    const below = out[(r + 1) * 2]!;
-    const mid = out[r * 2 + 1]!;
-    for (let c = 0; c < newCols; c++) {
-      mid[c] = (above[c]! + below[c]!) / 2;
-    }
-  }
-  return out;
-};
-
+/**
+ * Props for the internal {@link MetaRow} two-column metadata row.
+ * @source
+ */
 interface MetaRowProps {
   readonly y: number;
   readonly x: number;
@@ -135,7 +123,7 @@ export const BedMeshPanel = ({ data, error, y, x, width, height }: BedMeshPanelP
   // (highest Y), matching the bash `jq | reverse` step.
   const flipped: readonly (readonly number[])[] = [...meshMatrix].slice().reverse();
 
-  const interp = interpolate(flipped);
+  const interp = interpolateMesh(flipped);
   const ir = interp.length;
   const ic = interp[0]?.length ?? 0;
   const colorGrid: string[][] = interp.map((row) => row.map((v) => meshValToHex(v, absMax)));

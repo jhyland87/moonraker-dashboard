@@ -1,6 +1,91 @@
 import type { ClientConfig } from '@jhyland87/moonraker-client';
 import type { SensorConfig } from '../types/index';
 
+/**
+ * Identifier for a panel that can appear in the dashboard's top header row.
+ * - `sensor-table`  — temperature/sensor table on the left
+ * - `print-status`  — print job metadata
+ * - `system-stats`  — system utilization (CPU/Mem/MCU)
+ * @source
+ */
+export type HeaderSlotKind = 'sensor-table' | 'print-status' | 'system-stats';
+
+/**
+ * A dimensional value: a fixed number of character cells, a percentage of
+ * the available row (e.g. `"40%"`), or `"auto"` to fall back to the
+ * panel's intrinsic preferred size.
+ * @source
+ */
+export type Dimension = number | `${number}%` | 'auto';
+
+/**
+ * Verbose form of a dimension that adds optional `min` / `max` clamps.
+ * Either field may be omitted; both are interpreted in *cells*.
+ *
+ * If even `min` doesn't fit on screen, the panel is dropped from the
+ * layout entirely.
+ * @source
+ */
+export interface DimensionSpec {
+  /** Target value. Defaults to the panel's intrinsic preferred size. */
+  readonly value?: Dimension;
+  /** Hard minimum width/height in character cells. */
+  readonly min?: number;
+  /** Hard maximum width/height in character cells. */
+  readonly max?: number;
+}
+
+/**
+ * Configuration entry for a single panel in the header row.
+ *
+ * Width may be a single {@link Dimension} (shorthand, no clamps) or a
+ * {@link DimensionSpec} for fine-grained control. Height is reserved for
+ * a future iteration — header panels currently render at their intrinsic
+ * height regardless of this value.
+ * @source
+ */
+export interface HeaderPanelLayoutEntry {
+  readonly component: HeaderSlotKind;
+  readonly width?: Dimension | DimensionSpec;
+  /**
+   * Currently advisory only. Header panels render at their intrinsic
+   * height (defined inside each component). Reserved for forward
+   * compatibility so configs written today survive future expansion.
+   */
+  readonly height?: Dimension | DimensionSpec;
+}
+
+/**
+ * Static UI-layout configuration. Currently controls the header row;
+ * future versions may add slots for the main (chart) and bottom areas.
+ * @source
+ */
+export interface LayoutConfig {
+  /**
+   * Header components in left-to-right rendering order. Components not
+   * listed are not rendered. Duplicate components collapse to their
+   * first occurrence.
+   *
+   * Each entry can override width with a fixed cell count, a percentage
+   * of the row, or `"auto"` (use the panel's preferred width). `min` and
+   * `max` clamps can be applied on top of any of those.
+   *
+   * @example
+   * ```ts
+   * header: [
+   *   { component: 'sensor-table' },                              // auto (57 cells)
+   *   { component: 'print-status', width: { value: '40%', min: 40, max: 80 } },
+   *   { component: 'system-stats', width: 36 },                   // fixed
+   * ]
+   * ```
+   */
+  readonly header: readonly HeaderPanelLayoutEntry[];
+}
+
+/**
+ * Console-panel configuration knobs.
+ * @source
+ */
 export interface ConsoleConfig {
   /**
    * When `true`, mouse-wheel scrolling follows the system's "natural"
@@ -18,6 +103,10 @@ export interface ConsoleConfig {
   readonly debug: boolean;
 }
 
+/**
+ * Top-level dashboard configuration object passed to {@link App}.
+ * @source
+ */
 export interface DashboardConfig {
   readonly client: ClientConfig;
   readonly sensors: readonly SensorConfig[];
@@ -26,6 +115,7 @@ export interface DashboardConfig {
   /** Sampling cadence in milliseconds (driven client-side off pushed updates). */
   readonly sampleIntervalMs: number;
   readonly console: ConsoleConfig;
+  readonly layout: LayoutConfig;
 }
 
 const envServer = process.env.MOONRAKER_HOST ?? '192.168.0.96';
@@ -100,5 +190,12 @@ export const config: DashboardConfig = {
   console: {
     naturalScroll: false,
     debug: false,
+  },
+  layout: {
+    header: [
+      { component: 'sensor-table' },
+      { component: 'print-status' },
+      { component: 'system-stats' },
+    ],
   },
 };

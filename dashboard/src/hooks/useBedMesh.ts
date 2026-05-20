@@ -1,6 +1,13 @@
 import type { MoonrakerClient, PrinterStatus } from '@jhyland87/moonraker-client';
 import { useCallback, useEffect, useState } from 'react';
 
+import { computeBedMeshStats, type BedMeshStats } from '../services/bedMesh';
+
+/**
+ * Subset of Klipper's `bed_mesh.profiles[<name>].mesh_params` that the
+ * dashboard surfaces in the visualization panel.
+ * @source
+ */
 export interface BedMeshParams {
   readonly min_x: number;
   readonly max_x: number;
@@ -12,14 +19,12 @@ export interface BedMeshParams {
   readonly tension?: number;
 }
 
-export interface BedMeshStats {
-  readonly highest: number;
-  readonly lowest: number;
-  readonly range: number;
-  readonly stddev: number;
-  readonly variance: number;
-}
-
+/**
+ * Parsed bed-mesh data as the dashboard consumes it. All raw Klipper
+ * fields are normalized to their useful TypeScript shape here so the
+ * downstream component never has to deal with snake_case or unknowns.
+ * @source
+ */
 export interface BedMeshData {
   readonly profileName: string;
   /** Raw probed values, `y_count` rows by `x_count` cols. */
@@ -42,46 +47,24 @@ interface RawBedMesh {
   >;
 }
 
-const computeStats = (matrix: readonly (readonly number[])[]): BedMeshStats | null => {
-  let n = 0;
-  let highest = -Infinity;
-  let lowest = Infinity;
-  let sum = 0;
-  for (const row of matrix) {
-    for (const v of row) {
-      if (typeof v !== 'number' || !Number.isFinite(v)) continue;
-      if (v > highest) highest = v;
-      if (v < lowest) lowest = v;
-      sum += v;
-      n++;
-    }
-  }
-  if (n === 0) return null;
-  const mean = sum / n;
-  let sq = 0;
-  for (const row of matrix) {
-    for (const v of row) {
-      if (typeof v !== 'number' || !Number.isFinite(v)) continue;
-      const d = v - mean;
-      sq += d * d;
-    }
-  }
-  const variance = sq / n;
-  return {
-    highest,
-    lowest,
-    range: highest - lowest,
-    variance,
-    stddev: Math.sqrt(variance),
-  };
-};
-
+/**
+ * Convert Moonraker's raw `bed_mesh` printer-object payload into the
+ * dashboard's normalized shape. Returns `null` when the payload contains
+ * no usable matrix.
+ *
+ * Kept as a free function so unit tests can verify the conversion without
+ * mounting the React hook.
+ *
+ * @param raw - Raw `bed_mesh` object as returned by Moonraker.
+ * @returns Parsed bed-mesh data or `null`.
+ * @source
+ */
 const parseBedMesh = (raw: RawBedMesh | undefined): BedMeshData | null => {
   if (!raw) return null;
   const profileName = raw.profile_name ?? '';
   const meshMatrix = raw.mesh_matrix ?? [];
   if (meshMatrix.length === 0 || meshMatrix[0]?.length === 0) return null;
-  const stats = computeStats(meshMatrix);
+  const stats = computeBedMeshStats(meshMatrix);
   if (!stats) return null;
   const profParams = raw.profiles?.[profileName]?.mesh_params;
   const params: BedMeshParams = {
@@ -103,6 +86,10 @@ const parseBedMesh = (raw: RawBedMesh | undefined): BedMeshData | null => {
   };
 };
 
+/**
+ * Return value of {@link useBedMesh}.
+ * @source
+ */
 export interface UseBedMeshResult {
   readonly data: BedMeshData | null;
   readonly error?: string;
@@ -110,12 +97,18 @@ export interface UseBedMeshResult {
 }
 
 /**
- * Fetches the current `bed_mesh` printer object via `queryObjects` (one-shot,
- * doesn't touch the shared subscription) and listens to `notify:status_update`
- * for inline changes. The hook is cheap when idle — it doesn't poll. Call
- * `refresh()` to force a re-fetch (e.g. when the bed mesh panel opens).
+ * Fetches the current `bed_mesh` printer object via `queryObjects`
+ * (one-shot, doesn't touch the shared subscription) and listens to
+ * `notify:status_update` for inline changes. The hook is cheap when
+ * idle — it doesn't poll. Call `refresh()` to force a re-fetch (e.g.
+ * when the bed mesh panel opens).
  *
- * Per the task: this never sends any gcode commands, only queries.
+ * This hook never sends any gcode commands — only queries — making it
+ * safe to mount alongside the rest of the dashboard.
+ *
+ * @param client - The websocket client.
+ * @returns The latest parsed mesh data + a `refresh()` trigger.
+ * @source
  */
 export const useBedMesh = (client: MoonrakerClient): UseBedMeshResult => {
   const [data, setData] = useState<BedMeshData | null>(null);

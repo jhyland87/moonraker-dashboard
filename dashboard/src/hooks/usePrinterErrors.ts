@@ -1,22 +1,56 @@
 import type { MoonrakerClient, PrinterStatus } from '@jhyland87/moonraker-client';
 import { useEffect, useState } from 'react';
 
+import {
+  fetchKlippyLogTail,
+  DEFAULT_KLIPPY_LOG_TAIL_BYTES,
+} from '../services/klippyLogTail';
 import { parseKlippyLog, type ParsedLogError } from '../services/parseKlippyLog';
 
+/**
+ * Klipper's reported lifecycle state. Mirrors the values that the
+ * `webhooks` printer object can report; `unknown` is a sentinel for the
+ * dashboard's pre-data state.
+ * @source
+ */
 export type KlippyState = 'startup' | 'ready' | 'shutdown' | 'error' | 'unknown';
 
+/**
+ * Return `true` for the two states the dashboard treats as "the printer
+ * isn't OK right now".
+ *
+ * @param s - The Klipper state.
+ * @returns `true` if it's a shutdown or error state.
+ * @source
+ */
 const isErrorState = (s: KlippyState): boolean => s === 'shutdown' || s === 'error';
 
+/**
+ * Subset of the `webhooks` printer object the hook actually reads.
+ * @source
+ */
 interface WebhooksStatus {
   readonly state?: KlippyState | string;
   readonly state_message?: string;
 }
 
+/**
+ * Coerce an unknown value into a {@link KlippyState}, falling back to
+ * `unknown` for any unrecognized input.
+ *
+ * @param raw - The raw value from `webhooks.state`.
+ * @returns A typed state value.
+ * @source
+ */
 const normalizeState = (raw: unknown): KlippyState => {
   if (raw === 'startup' || raw === 'ready' || raw === 'shutdown' || raw === 'error') return raw;
   return 'unknown';
 };
 
+/**
+ * Reactive state exposed by {@link usePrinterErrors}.
+ * @source
+ */
 export interface PrinterErrorsState {
   readonly klippyState: KlippyState;
   readonly stateMessage?: string;
@@ -30,12 +64,19 @@ const INITIAL: PrinterErrorsState = {
 };
 
 /**
- * Subscribe to `webhooks.{state,state_message}` and — when Klipper enters a
- * shutdown/error state — fetch the tail of klippy.log via the client's HTTP
- * helper and surface the parsed errors.
+ * Subscribe to `webhooks.{state,state_message}` and — when Klipper enters
+ * a shutdown/error state — fetch the tail of `klippy.log` (via the
+ * shared {@link fetchKlippyLogTail} service so this fetch deduplicates
+ * with the one in {@link useGcodeConsole}) and surface the parsed errors.
  *
- * Errors are fetched once per transition into a bad state. The fetch is
- * AbortController-guarded so unmount or recovery aborts in-flight work.
+ * Errors are fetched once per transition *into* a bad state with
+ * `fresh: true`. The fetch is AbortController-guarded so unmount or
+ * recovery aborts any in-flight work.
+ *
+ * @param client - The websocket client.
+ * @returns Reactive state describing the Klipper lifecycle + the parsed
+ *          errors associated with the current incident, if any.
+ * @source
  */
 export const usePrinterErrors = (client: MoonrakerClient): PrinterErrorsState => {
   const [state, setState] = useState<PrinterErrorsState>(INITIAL);
@@ -50,7 +91,12 @@ export const usePrinterErrors = (client: MoonrakerClient): PrinterErrorsState =>
       const ac = new AbortController();
       activeFetch = ac;
       try {
-        const tail = await client.getLogTail('klippy.log', 50_000);
+        // `fresh: true` — the printer just transitioned into an error state,
+        // so we want the *current* log tail rather than a recently-cached one.
+        const tail = await fetchKlippyLogTail(client, {
+          bytes: DEFAULT_KLIPPY_LOG_TAIL_BYTES,
+          fresh: true,
+        });
         if (cancelled || ac.signal.aborted) return;
         const errors = parseKlippyLog(tail);
         setState((s) => ({ ...s, errors, fetchError: undefined }));

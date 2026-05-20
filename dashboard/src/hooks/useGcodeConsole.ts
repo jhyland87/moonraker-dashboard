@@ -1,10 +1,25 @@
 import type { MoonrakerClient } from '@jhyland87/moonraker-client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { fetchKlippyLogTail } from '../services/klippyLogTail';
 import { parseKlippyLog } from '../services/parseKlippyLog';
 
+/**
+ * Tag identifying how an entry should be rendered in the console panel.
+ *
+ * - `command`     — outbound gcode sent by some client (us or another).
+ * - `response`    — printer's response payload (Klipper `// ...` lines).
+ * - `log_error`   — error event surfaced from `klippy.log` parsing.
+ * - `log_warning` — warning event surfaced from `klippy.log` parsing.
+ * - `debug`       — dashboard-internal diagnostic (ws lifecycle, etc.).
+ * @source
+ */
 export type GcodeEntryType = 'command' | 'response' | 'log_error' | 'log_warning' | 'debug';
 
+/**
+ * A single entry in the console feed.
+ * @source
+ */
 export interface GcodeEntry {
   /** Unix epoch seconds. From `server.gcode_store` for seeded entries; local time for live ones. */
   readonly time: number;
@@ -12,6 +27,10 @@ export interface GcodeEntry {
   readonly message: string;
 }
 
+/**
+ * Options accepted by {@link useGcodeConsole}.
+ * @source
+ */
 export interface UseGcodeConsoleOptions {
   /** When true, lifecycle + diagnostic events from the client are appended as `debug` entries. */
   readonly debug?: boolean;
@@ -39,18 +58,24 @@ const KLIPPY_LOG_TAIL_BYTES = 50_000;
 const STORE_POLL_INTERVAL_MS = 1_500;
 
 /**
- * Klipper prefixes comment-style responses with `// ` (its M118/echo
- * convention) and we add our own `//` glyph in the UI, so strip the inbound
- * one to avoid the doubled `// //` rendering.
+ * Strip Klipper's comment prefix (`// `) from a response message so the
+ * dashboard's own `//` glyph isn't shown alongside it.
+ *
+ * @param msg - Raw response message.
+ * @returns The message with any leading `// ` (or `//`) removed.
+ * @source
  */
 const stripResponsePrefix = (msg: string): string =>
   msg.startsWith('// ') ? msg.slice(3) : msg.startsWith('//') ? msg.slice(2) : msg;
 
 /**
- * Klipper marks error responses (e.g. `Move out of range`, `key585` faults) by
- * prefixing the response payload with `!!` (after the `//` comment prefix).
- * Reclassify those as `log_error` so they render red instead of blending in
- * with the normal response stream.
+ * Classify a Klipper response message: strip the comment prefix, and if
+ * the remaining payload is marked with `!!` (Klipper's error indicator),
+ * tag it as a `log_error` instead of a normal `response`.
+ *
+ * @param rawMessage - The raw message as Klipper sent it.
+ * @returns The cleaned message with its appropriate entry type.
+ * @source
  */
 const classifyResponse = (
   rawMessage: string,
@@ -61,6 +86,14 @@ const classifyResponse = (
   return { type: 'response', message: stripped };
 };
 
+/**
+ * Convert a Klipper log timestamp (`YYYY-MM-DD HH:MM:SS` in local time)
+ * to Unix epoch seconds. Returns `0` for missing or unparseable input.
+ *
+ * @param ts - Timestamp string from the log.
+ * @returns Epoch seconds, or `0` on failure.
+ * @source
+ */
 const parseLogTimestamp = (ts: string | undefined): number => {
   if (!ts) return 0;
   // Klipper log format: 'YYYY-MM-DD HH:MM:SS' (local time, no TZ). The
@@ -70,16 +103,30 @@ const parseLogTimestamp = (ts: string | undefined): number => {
   return Number.isFinite(t) ? t / 1000 : 0;
 };
 
+/**
+ * Return value of {@link useGcodeConsole}.
+ * @source
+ */
 export interface UseGcodeConsoleResult {
   readonly entries: readonly GcodeEntry[];
   readonly send: (script: string) => Promise<void>;
 }
 
 /**
- * Maintain a local rolling buffer of gcode commands + responses, seeded from
- * Moonraker's `server.gcode_store` and updated live via `notify:gcode_response`.
- * Exposes a `send` that calls `printer.gcode.script` and optimistically
- * appends the command locally so the user sees their input immediately.
+ * Maintain a local rolling buffer of gcode commands + responses, seeded
+ * from Moonraker's `server.gcode_store` and updated live via
+ * `notify:gcode_response`. Exposes a `send` that calls
+ * `printer.gcode.script` and optimistically appends the command locally so
+ * the user sees their input immediately.
+ *
+ * Also polls `server.gcode_store` once every {@link STORE_POLL_INTERVAL_MS}
+ * to surface commands originated by *other* clients (Fluidd, Mainsail) —
+ * Moonraker doesn't publish a notification for those.
+ *
+ * @param client - The websocket client.
+ * @param options - See {@link UseGcodeConsoleOptions}.
+ * @returns Entries + a `send(script)` function.
+ * @source
  */
 export const useGcodeConsole = (
   client: MoonrakerClient,
@@ -142,7 +189,11 @@ export const useGcodeConsole = (
     const seedAndStart = async (): Promise<void> => {
       const [gcodeRes, logTail] = await Promise.allSettled([
         client.request<GcodeStoreResult>('server.gcode_store'),
-        client.getLogTail('klippy.log', KLIPPY_LOG_TAIL_BYTES),
+        // Routed through the shared service so the parallel call in
+        // `usePrinterErrors` (when the printer comes up already in an error
+        // state) reuses the same in-flight promise instead of duplicating
+        // the network request.
+        fetchKlippyLogTail(client, { bytes: KLIPPY_LOG_TAIL_BYTES }),
       ]);
       if (cancelled) return;
 
