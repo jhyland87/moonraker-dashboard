@@ -3,6 +3,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { useInput, useSize } from 'react-curse';
 
 import { AsciiLineChart } from './components/AsciiLineChart';
+import { BedMeshPanel } from './components/BedMeshPanel';
 import { ConsolePanel } from './components/ConsolePanel';
 import { ErrorPanel, ERROR_PANEL_HEIGHT } from './components/ErrorPanel';
 import {
@@ -22,6 +23,7 @@ import {
 } from './components/SystemStatsPanel';
 import type { ChartSeries } from './chart/index';
 import type { DashboardConfig } from './config/index';
+import { useBedMesh } from './hooks/useBedMesh';
 import { useGcodeConsole } from './hooks/useGcodeConsole';
 import { useKlipperStats } from './hooks/useKlipperStats';
 import { useMachineProcStats } from './hooks/useMachineProcStats';
@@ -103,6 +105,7 @@ export const App = ({ client, config }: AppProps) => {
   const gcodeConsole = useGcodeConsole(client, { debug });
   const procStats = useMachineProcStats(client);
   const klipperStats = useKlipperStats(client);
+  const bedMesh = useBedMesh(client);
   const showErrorPanel =
     printerErrors.klippyState === 'shutdown' || printerErrors.klippyState === 'error';
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
@@ -111,6 +114,7 @@ export const App = ({ client, config }: AppProps) => {
   // focus, every keystroke goes into the draft — sensor toggles and other
   // app-level shortcuts must stay out of the way. View-mode is unaffected.
   const [consoleInputFocused, setConsoleInputFocused] = useState(false);
+  const [bedMeshOpen, setBedMeshOpen] = useState(false);
 
   // Map case-insensitive toggle key → sensor; built once per config change so
   // the input handler stays cheap.
@@ -156,6 +160,21 @@ export const App = ({ client, config }: AppProps) => {
         setConsoleOpen(true);
         return;
       }
+      if (input === 'h' || input === 'H') {
+        // Toggle the bed mesh visualization. When opening, kick off a fresh
+        // query so the data shown is current — bed_mesh doesn't change often
+        // but the user is explicitly asking to view it, so refresh on entry.
+        setBedMeshOpen((open) => {
+          if (!open) bedMesh.refresh();
+          return !open;
+        });
+        return;
+      }
+      if (input === '\x1b' && bedMeshOpen) {
+        // Esc closes the bed mesh panel when nothing else owns it.
+        setBedMeshOpen(false);
+        return;
+      }
       const key = toggleKeys.get(input.toLowerCase());
       if (key === undefined) return;
       setHidden((prev) => {
@@ -167,7 +186,7 @@ export const App = ({ client, config }: AppProps) => {
     },
     // Deps: react-curse defaults to `[]`, which freezes the closure at mount.
     // Include every state value the handler reads.
-    [consoleInputFocused, consoleOpen, toggleKeys, client],
+    [consoleInputFocused, consoleOpen, bedMeshOpen, bedMesh, toggleKeys, client],
   );
 
   const series = useMemo(
@@ -249,14 +268,25 @@ export const App = ({ client, config }: AppProps) => {
           width={systemPanelGeom.width}
         />
       )}
-      <AsciiLineChart
-        series={series}
-        width={width}
-        height={chartHeight}
-        x={0}
-        y={chartY}
-        theme={CHART_THEME}
-      />
+      {bedMeshOpen ? (
+        <BedMeshPanel
+          data={bedMesh.data}
+          error={bedMesh.error}
+          x={0}
+          y={chartY}
+          width={width}
+          height={chartHeight}
+        />
+      ) : (
+        <AsciiLineChart
+          series={series}
+          width={width}
+          height={chartHeight}
+          x={0}
+          y={chartY}
+          theme={CHART_THEME}
+        />
+      )}
       {consoleOpen && (
         <ConsolePanel
           entries={gcodeConsole.entries}
