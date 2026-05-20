@@ -24,6 +24,9 @@ const PANEL_MIN = 40;
 const PANEL_MAX = 70;
 const PANEL_GAP = 4;
 
+export const PRINT_PANEL_MIN = PANEL_MIN;
+export const PRINT_PANEL_GAP = PANEL_GAP;
+
 export interface PanelGeometry {
   readonly width: number;
   readonly x: number;

@@ -1,6 +1,23 @@
 import type { ClientConfig } from '@jhyland87/moonraker-client';
 import type { SensorConfig } from '../types/index';
 
+export interface ConsoleConfig {
+  /**
+   * When `true`, mouse-wheel scrolling follows the system's "natural"
+   * convention (wheel up → older entries / scroll back into history). When
+   * `false`, the direction is reversed (wheel up → newer entries / scroll
+   * toward the live tail), which matches most CLI tools' scrollback behavior.
+   */
+  readonly naturalScroll: boolean;
+  /**
+   * Initial state for the in-console debug logger. Can also be toggled at
+   * runtime by pressing `d` in the console's view mode. When on, lifecycle
+   * events (ws open/close/error) are interleaved into the feed as dim
+   * `[D]`-prefixed lines.
+   */
+  readonly debug: boolean;
+}
+
 export interface DashboardConfig {
   readonly client: ClientConfig;
   readonly sensors: readonly SensorConfig[];
@@ -8,6 +25,7 @@ export interface DashboardConfig {
   readonly historyLength: number;
   /** Sampling cadence in milliseconds (driven client-side off pushed updates). */
   readonly sampleIntervalMs: number;
+  readonly console: ConsoleConfig;
 }
 
 const envServer = process.env.MOONRAKER_HOST ?? '192.168.0.96';
@@ -79,4 +97,8 @@ export const config: DashboardConfig = {
   sensors,
   historyLength: 500,
   sampleIntervalMs: 1000,
+  console: {
+    naturalScroll: false,
+    debug: false,
+  },
 };

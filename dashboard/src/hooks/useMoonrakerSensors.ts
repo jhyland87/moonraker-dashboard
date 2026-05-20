@@ -57,6 +57,9 @@ const buildSubscriptionSpec = (
   print_stats: ['state', 'filename', 'total_duration', 'filament_used', 'info'],
   display_status: ['progress', 'message'],
   virtual_sdcard: ['progress', 'layer', 'layer_count'],
+  system_stats: ['sysload', 'cputime', 'memavail'],
+  mcu: ['last_stats'],
+  'mcu rpi': ['last_stats'],
 });
 
 type SensorPartial = Partial<{
