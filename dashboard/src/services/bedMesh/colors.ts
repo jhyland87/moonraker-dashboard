@@ -1,95 +1,131 @@
 /**
- * Bed-mesh color gradients, mirrored 1:1 from
- * `moonraker-cli/includes/data/{positive,negative}-colors.list`.
+ * Diverging colormap and value→color resolver for the bed-mesh heatmap.
  *
- * The bash version's gradient is non-standard for "diverging" colormaps:
- *   - At value 0 the color is a neutral blue-gray (96,150,197).
- *   - Positive direction climbs through warm tones to a deep red (165,0,39).
- *   - Negative direction stays in the blue/purple family down to (49,54,150).
+ * Palette is `RdYlBu_r` from ColorBrewer (11 stops) — the same set
+ * Fluidd's `BedMeshChart.vue` hands to ECharts' `visualMap.inRange.color`
+ * (see [Fluidd's BedMeshChart](https://github.com/fluidd-core/fluidd/blob/develop/src/components/widgets/bedmesh/BedMeshChart.vue)).
+ * Mapping is linear over an explicit `[min, max]` domain, matching how
+ * ECharts' continuous visualMap interprets the same input.
  *
- * Reproducing it exactly here so the dashboard's bed-mesh visualization
- * matches what the bash CLI renders.
- *
- * Index lookup follows the bash logic:
- *   value_limit = max(|min|, |max|)
- *   pos_idx = floor((v / value_limit) * (POSITIVE.length - 1))
- *   neg_idx = floor((|v| / value_limit) * (NEGATIVE.length - 1))
+ * Defaults follow Fluidd: domain `[-0.5, +0.5]`. Bed-mesh values outside
+ * that window are clamped to the endpoint colors. Callers can override
+ * the domain — useful for low-noise meshes where ±0.5 swamps the signal
+ * with the central pale-yellow band.
  */
 
-export const POSITIVE_COLORS: ReadonlyArray<readonly [number, number, number]> = [
-  [96,150,197],[98,151,197],[100,152,198],[102,154,199],[104,155,200],[106,157,201],[108,158,201],[110,160,202],
-  [112,161,203],[114,163,204],[116,164,205],[118,166,205],[120,167,206],[122,169,207],[124,170,208],[126,172,209],
-  [128,173,209],[130,175,210],[132,176,211],[134,178,212],[136,179,213],[138,181,213],[140,182,214],[142,184,215],
-  [144,185,216],[146,187,217],[148,188,217],[150,189,218],[152,191,219],[154,192,220],[156,194,221],[158,195,221],
-  [160,197,222],[162,198,223],[164,200,224],[166,201,225],[168,203,225],[170,204,226],[172,206,227],[174,207,228],
-  [176,209,229],[178,210,229],[180,212,230],[182,213,231],[184,215,232],[186,216,233],[188,218,233],[190,219,234],
-  [192,221,235],[194,222,236],[196,224,237],[198,225,237],[200,226,238],[202,228,239],[204,229,240],[206,231,241],
-  [208,232,241],[210,234,242],[212,235,243],[214,237,244],[216,238,245],[218,240,245],[220,241,246],[222,243,247],
-  [223,244,248],[223,244,246],[223,243,244],[224,242,242],[224,241,240],[225,240,238],[225,240,236],[226,239,234],
-  [226,238,232],[226,237,230],[227,236,228],[227,236,226],[228,235,224],[228,234,222],[229,233,220],[229,232,218],
-  [229,232,216],[230,231,214],[230,230,212],[231,229,210],[231,228,208],[232,227,206],[232,227,204],[233,226,202],
-  [233,225,200],[233,224,198],[234,223,196],[234,223,194],[235,222,192],[235,221,190],[236,220,188],[236,219,186],
-  [236,219,184],[237,218,182],[237,217,180],[238,216,178],[238,215,176],[239,214,174],[239,214,172],[239,213,170],
-  [240,212,168],[240,211,166],[241,210,164],[241,210,162],[242,209,160],[242,208,158],[243,207,156],[243,206,154],
-  [243,206,152],[244,205,150],[244,204,148],[245,203,146],[245,202,144],[246,201,142],[246,201,140],[246,200,138],
-  [247,199,136],[247,198,134],[248,197,132],[248,197,130],[249,196,128],[249,195,126],[249,194,124],[250,193,122],
-  [250,193,120],[251,192,118],[251,191,116],[252,190,114],[252,189,112],[253,188,110],[253,188,110],[253,186,110],
-  [252,184,109],[251,182,108],[250,180,107],[249,178,107],[248,176,106],[247,174,105],[246,172,104],[245,170,104],
-  [244,168,103],[243,166,102],[242,164,101],[241,162,101],[240,160,100],[239,158,99],[239,156,98],[238,154,98],
-  [237,152,97],[236,150,96],[235,148,95],[234,146,95],[233,144,94],[232,142,93],[231,140,92],[230,138,92],
-  [229,136,91],[228,134,90],[227,132,89],[226,130,89],[225,128,88],[224,126,87],[224,124,86],[223,122,86],
-  [222,120,85],[221,118,84],[220,116,83],[219,114,83],[218,112,82],[217,110,81],[216,108,80],[215,106,80],
-  [214,104,79],[213,102,78],[212,100,77],[211,98,77],[210,96,76],[209,94,75],[209,92,74],[208,90,73],
-  [207,88,73],[206,86,72],[205,84,71],[204,82,70],[203,80,70],[202,78,69],[201,76,68],[200,74,67],
-  [199,72,67],[198,70,66],[197,68,65],[196,66,64],[195,64,64],[195,62,63],[194,60,62],[193,58,61],
-  [192,56,61],[191,54,60],[190,52,59],[189,50,58],[188,48,58],[187,46,57],[186,44,56],[185,42,55],
-  [184,40,55],[183,38,54],[182,36,53],[181,34,52],[180,32,52],[180,30,51],[179,28,50],[178,26,49],
-  [177,24,49],[176,22,48],[175,20,47],[174,18,46],[173,16,46],[172,14,45],[171,12,44],[170,10,43],
-  [169,8,43],[168,6,42],[167,4,41],[166,2,40],[165,0,39],
-];
+/**
+ * 11-stop diverging palette in ascending-value order (lowest first).
+ * Lifted verbatim from Fluidd's bed mesh chart.
+ * @source
+ */
+export const PALETTE = [
+  '#313695',
+  '#4575b4',
+  '#74add1',
+  '#abd9e9',
+  '#e0f3f8',
+  '#ffffbf',
+  '#fee090',
+  '#fdae61',
+  '#f46d43',
+  '#d73027',
+  '#a50026',
+] as const;
 
-export const NEGATIVE_COLORS: ReadonlyArray<readonly [number, number, number]> = [
-  [96,150,197],[96,149,197],[96,148,197],[95,147,196],[95,146,196],[94,145,195],[94,144,195],[93,143,194],
-  [93,142,194],[92,141,193],[92,140,193],[91,139,192],[91,138,192],[90,137,191],[90,136,191],[89,135,190],
-  [89,134,190],[88,133,189],[88,132,189],[87,131,188],[87,130,188],[86,129,187],[86,128,187],[85,127,186],
-  [85,126,186],[84,125,185],[84,124,185],[83,123,184],[83,122,184],[82,121,183],[82,120,183],[81,119,182],
-  [81,118,182],[80,117,181],[80,116,181],[79,115,180],[79,114,180],[78,113,179],[78,112,179],[77,111,178],
-  [77,110,178],[76,109,177],[76,108,177],[75,107,176],[75,106,176],[74,105,175],[74,104,175],[73,103,174],
-  [73,102,174],[73,101,174],[72,100,173],[72,99,173],[71,98,172],[71,97,172],[70,96,171],[70,95,171],
-  [69,94,170],[69,93,170],[68,92,169],[68,91,169],[67,90,168],[67,89,168],[66,88,167],[66,87,167],
-  [65,86,166],[65,85,166],[64,84,165],[64,83,165],[63,82,164],[63,81,164],[62,80,163],[62,79,163],
-  [61,78,162],[61,77,162],[60,76,161],[60,75,161],[59,74,160],[59,73,160],[58,72,159],[58,71,159],
-  [57,70,158],[57,69,158],[56,68,157],[56,67,157],[55,66,156],[55,65,156],[54,64,155],[54,63,155],
-  [53,62,154],[53,61,154],[52,60,153],[52,59,153],[51,58,152],[51,57,152],[50,56,151],[50,55,151],
-  [49,54,150],
-];
+/**
+ * Default lower bound of the visualization domain. Values at or below
+ * this map to {@link PALETTE}'s first color.
+ * @source
+ */
+export const DEFAULT_DOMAIN_MIN = -0.5;
+
+/**
+ * Default upper bound of the visualization domain. Values at or above
+ * this map to {@link PALETTE}'s last color.
+ * @source
+ */
+export const DEFAULT_DOMAIN_MAX = 0.5;
+
+/**
+ * Cached RGB triples for {@link PALETTE} so we don't re-parse the hex on
+ * every cell of every render.
+ */
+const PALETTE_RGB: ReadonlyArray<readonly [number, number, number]> = PALETTE.map(
+  (hex): readonly [number, number, number] => {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return [r, g, b];
+  },
+);
 
 const HEX = '0123456789abcdef';
+
+/**
+ * Format a 0-255 byte as a 2-character lowercase hex string.
+ *
+ * @param n - Byte value.
+ * @returns Two-character hex.
+ * @source
+ */
 const hex2 = (n: number): string => HEX[(n >> 4) & 15]! + HEX[n & 15]!;
 
+/**
+ * Format an RGB triple as a `#rrggbb` hex string suitable for
+ * `react-curse`'s `color` / `background` props.
+ *
+ * @param rgb - The triple.
+ * @returns The hex string.
+ * @source
+ */
 export const rgbHex = (rgb: readonly [number, number, number]): string =>
   `#${hex2(rgb[0])}${hex2(rgb[1])}${hex2(rgb[2])}`;
 
 /**
- * Map a mesh value to its display color, mirroring the bash
- * `mesh_val_to_color()` logic. `absMax = max(|min|, |max|)` keeps the
- * gradient symmetric around zero.
+ * Linearly interpolate one byte channel.
+ *
+ * @param a - Start value.
+ * @param b - End value.
+ * @param t - Interpolation factor in [0, 1].
+ * @returns The interpolated byte, rounded to the nearest integer.
+ * @source
  */
-export const meshValToHex = (v: number, absMax: number): string => {
-  if (!Number.isFinite(v) || absMax <= 0) return rgbHex(POSITIVE_COLORS[0]!);
-  if (v === 0) return rgbHex(POSITIVE_COLORS[0]!);
-  if (v > 0) {
-    const clamped = Math.min(v, absMax);
-    const idx = Math.min(
-      POSITIVE_COLORS.length - 1,
-      Math.floor((clamped / absMax) * (POSITIVE_COLORS.length - 1)),
-    );
-    return rgbHex(POSITIVE_COLORS[idx]!);
+const lerp = (a: number, b: number, t: number): number =>
+  Math.round(a + (b - a) * t);
+
+/**
+ * Map a mesh value to its display color using linear interpolation
+ * between adjacent {@link PALETTE} stops.
+ *
+ * The input value is first clamped into `[min, max]`, then normalized to
+ * `[0, 1]` and used to pick the surrounding pair of stops. Returns the
+ * mid-palette color when `max <= min` (degenerate domain) or when the
+ * input is non-finite.
+ *
+ * @param v - The mesh value.
+ * @param min - Lower bound of the domain. Defaults to {@link DEFAULT_DOMAIN_MIN}.
+ * @param max - Upper bound of the domain. Defaults to {@link DEFAULT_DOMAIN_MAX}.
+ * @returns A `#rrggbb` hex color.
+ * @source
+ */
+export const meshValToHex = (
+  v: number,
+  min: number = DEFAULT_DOMAIN_MIN,
+  max: number = DEFAULT_DOMAIN_MAX,
+): string => {
+  if (!Number.isFinite(v) || max <= min) {
+    return PALETTE[Math.floor(PALETTE.length / 2)]!;
   }
-  const clamped = Math.min(-v, absMax);
-  const idx = Math.min(
-    NEGATIVE_COLORS.length - 1,
-    Math.floor((clamped / absMax) * (NEGATIVE_COLORS.length - 1)),
-  );
-  return rgbHex(NEGATIVE_COLORS[idx]!);
+  const t = Math.max(0, Math.min(1, (v - min) / (max - min)));
+  const scaled = t * (PALETTE_RGB.length - 1);
+  const idx = Math.floor(scaled);
+  if (idx >= PALETTE_RGB.length - 1) return PALETTE[PALETTE.length - 1]!;
+  const frac = scaled - idx;
+  const a = PALETTE_RGB[idx]!;
+  const b = PALETTE_RGB[idx + 1]!;
+  return rgbHex([
+    lerp(a[0], b[0], frac),
+    lerp(a[1], b[1], frac),
+    lerp(a[2], b[2], frac),
+  ]);
 };

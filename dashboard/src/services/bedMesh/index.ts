@@ -4,8 +4,9 @@
  * @source
  */
 export {
-  POSITIVE_COLORS,
-  NEGATIVE_COLORS,
+  PALETTE,
+  DEFAULT_DOMAIN_MIN,
+  DEFAULT_DOMAIN_MAX,
   rgbHex,
   meshValToHex,
 } from './colors';

@@ -1,7 +1,12 @@
 import { Text } from 'react-curse';
 
 import type { BedMeshData } from '../hooks/useBedMesh';
-import { interpolateMesh, meshValToHex } from '../services/bedMesh';
+import {
+  DEFAULT_DOMAIN_MAX,
+  DEFAULT_DOMAIN_MIN,
+  interpolateMesh,
+  meshValToHex,
+} from '../services/bedMesh';
 import { fmtFixed } from '../services/format';
 import { toSubscript, toSuperscript } from '../services/unicodeCase';
 
@@ -117,7 +122,12 @@ export const BedMeshPanel = ({ data, error, y, x, width, height }: BedMeshPanelP
   const { profileName, meshMatrix, params, stats } = data;
   const rawRows = meshMatrix.length;
   const rawCols = meshMatrix[0]?.length ?? 0;
-  const absMax = Math.max(Math.abs(stats.highest), Math.abs(stats.lowest), 1e-6);
+  // Matches Fluidd's bed-mesh chart: the visualization domain is fixed
+  // at ±0.5mm regardless of actual data range. Cells beyond that are
+  // clamped to the endpoint colors (deep blue / deep red), making
+  // out-of-spec areas visually obvious.
+  const domainMin = DEFAULT_DOMAIN_MIN;
+  const domainMax = DEFAULT_DOMAIN_MAX;
 
   // Flip rows so the display's top corresponds to the back of the bed
   // (highest Y), matching the bash `jq | reverse` step.
@@ -126,7 +136,7 @@ export const BedMeshPanel = ({ data, error, y, x, width, height }: BedMeshPanelP
   const interp = interpolateMesh(flipped);
   const ir = interp.length;
   const ic = interp[0]?.length ?? 0;
-  const colorGrid: string[][] = interp.map((row) => row.map((v) => meshValToHex(v, absMax)));
+  const colorGrid: string[][] = interp.map((row) => row.map((v) => meshValToHex(v, domainMin, domainMax)));
 
   // Geometry.
   const colLabelY1 = y + HEADER_ROWS; // tens digit row (or just blank for single-digit cols)
@@ -139,12 +149,15 @@ export const BedMeshPanel = ({ data, error, y, x, width, height }: BedMeshPanelP
   // reads as a smooth color sweep. Matches heatmap height visually.
   const gradientX = heatStartX + ic + HEAT_GAP;
   const gradientStops = ir;
+  // Legend spans the *visualization* domain, not the data range — that
+  // way the gradient bar's colors actually correspond to the values
+  // shown alongside, even when data extends beyond [domainMin, domainMax].
   const gradientValues: number[] = [];
   for (let i = 0; i < gradientStops; i++) {
     const t = i / Math.max(1, gradientStops - 1);
-    gradientValues.push(stats.highest + (stats.lowest - stats.highest) * t);
+    gradientValues.push(domainMax + (domainMin - domainMax) * t);
   }
-  const gradientColors = gradientValues.map((v) => meshValToHex(v, absMax));
+  const gradientColors = gradientValues.map((v) => meshValToHex(v, domainMin, domainMax));
   const gradientTermRows = Math.ceil(gradientStops / 2);
   const labelX = gradientX + GRADIENT_W + 1;
 
