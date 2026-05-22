@@ -70,6 +70,21 @@ export const computeSystemPanelGeometry = (
 const BLOCKS = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'] as const;
 
 /**
+ * Pick a block character by fill level `0..8`. Out-of-range levels
+ * (which the caller shouldn't pass) clamp into the same range and fall
+ * back to a space. Pulling this out of the inline tight loops removes
+ * the indexed-access `| undefined` ambiguity without leaning on `!`.
+ *
+ * @param level - Desired fill level, clamped to `[0, BLOCKS.length - 1]`.
+ * @returns A single block character (one terminal cell wide).
+ * @source
+ */
+const blockChar = (level: number): string => {
+  const clamped = Math.min(BLOCKS.length - 1, Math.max(0, level));
+  return BLOCKS[clamped] ?? ' ';
+};
+
+/**
  * Normalize raw values to `[0..1]` against a fixed `domainMax`. Using a fixed
  * domain (rather than auto-scaling to observed max) means bars accurately
  * reflect "how loaded is this in absolute terms" — a series sitting around
@@ -98,8 +113,8 @@ const twoRowBars = (
     const total = Math.round(v * 16);
     const bottomFill = Math.min(8, total);
     const topFill = Math.max(0, total - 8);
-    bottomChars.push(BLOCKS[bottomFill]!);
-    topChars.push(BLOCKS[topFill]!);
+    bottomChars.push(blockChar(bottomFill));
+    topChars.push(blockChar(topFill));
   }
   return { top: padTop + topChars.join(''), bottom: padBottom + bottomChars.join('') };
 };
@@ -114,12 +129,7 @@ const oneRowBars = (
   const slice = rawValues.length >= width ? rawValues.slice(rawValues.length - width) : rawValues;
   const values = normalize(slice, domainMax);
   const pad = ' '.repeat(width - slice.length);
-  return (
-    pad +
-    values
-      .map((v) => BLOCKS[Math.min(8, Math.max(0, Math.round(v * 8)))]!)
-      .join('')
-  );
+  return pad + values.map((v) => blockChar(Math.round(v * 8))).join('');
 };
 
 /**

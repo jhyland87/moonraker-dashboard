@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 
 import { AsciiLineChart } from './AsciiLineChart';
-import type { ChartSeries } from '../chart/index';
+import type { ChartRenderer, ChartSeries } from '../chart/index';
 import { buildSeries } from '../services/chartSeries';
 import type { SensorConfig, SensorsState } from '../types/index';
 
@@ -27,6 +27,8 @@ export interface TemperatureChartPanelProps {
   readonly configs: readonly SensorConfig[];
   /** Set of toggle keys whose series should be hidden. */
   readonly hidden: ReadonlySet<string>;
+  /** Which character set to use when drawing the series. */
+  readonly renderer?: ChartRenderer;
   readonly x: number;
   readonly y: number;
   readonly width: number;
@@ -50,6 +52,7 @@ export const TemperatureChartPanel = ({
   sensors,
   configs,
   hidden,
+  renderer,
   x,
   y,
   width,
@@ -67,6 +70,7 @@ export const TemperatureChartPanel = ({
       x={x}
       y={y}
       theme={CHART_THEME}
+      renderer={renderer}
     />
   );
 };

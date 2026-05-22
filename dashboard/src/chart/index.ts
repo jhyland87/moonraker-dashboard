@@ -4,6 +4,7 @@ export type {
   ChartCell,
   ChartGrid,
   ChartOptions,
+  ChartRenderer,
   ChartRow,
   ChartSeries,
   ChartTheme,

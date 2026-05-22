@@ -46,9 +46,9 @@ export const ErrorPanel = ({
   }
   // Newest-last → reverse so the most recent is on top.
   const recent = [...errors].reverse().slice(0, ERROR_PANEL_BODY_ROWS - body.length);
-  for (let i = 0; i < recent.length; i++) {
-    body.push({ key: `e${i}`, text: formatError(recent[i]!, width) });
-  }
+  recent.forEach((entry, i) => {
+    body.push({ key: `e${i}`, text: formatError(entry, width) });
+  });
   while (body.length < ERROR_PANEL_BODY_ROWS) {
     body.push({ key: `pad${body.length}`, text: '' });
   }

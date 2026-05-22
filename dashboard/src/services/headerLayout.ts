@@ -28,9 +28,7 @@ export interface SlotGeometry {
  * look at when something looks off.
  * @source
  */
-export const HEADER_DEFAULTS: Readonly<
-  Record<HeaderSlotKind, { readonly preferred: number; readonly min: number; readonly max: number }>
-> = {
+export const HEADER_DEFAULTS = {
   'sensor-table': {
     preferred: SENSOR_TABLE_WIDTH,
     min: SENSOR_TABLE_WIDTH,
@@ -38,7 +36,9 @@ export const HEADER_DEFAULTS: Readonly<
   },
   'print-status': { preferred: 70, min: 40, max: 70 },
   'system-stats': { preferred: 60, min: 36, max: 60 },
-};
+} as const satisfies Readonly<
+  Record<HeaderSlotKind, { preferred: number; min: number; max: number }>
+>;
 
 /**
  * Horizontal gap, in character cells, between adjacent header slots.
@@ -84,8 +84,15 @@ export const resolveDimensionToCells = (
   // String of the form 'NN%'. Anything else is treated as a parse failure
   // and falls back to the component default.
   const match = /^(-?\d+(?:\.\d+)?)%$/.exec(value);
-  if (!match) return componentDefault;
-  const pct = parseFloat(match[1]!);
+  // `match[1]` is the captured group; the regex guarantees it's present
+  // when `match` is non-null, but `noUncheckedIndexedAccess` still types
+  // it as `string | undefined`. Read it through a local + guard.
+  const captured = match?.[1];
+  if (captured === undefined) return componentDefault;
+  // Google style prefers `Number()` + `Number.isFinite` over `parseFloat`,
+  // which silently accepts trailing garbage (`parseFloat('1abc') === 1`).
+  // Our regex already strips the `%`, so a clean Number() is appropriate.
+  const pct = Number(captured);
   if (!Number.isFinite(pct)) return componentDefault;
   return Math.max(0, Math.floor((pct / 100) * parentWidth));
 };
@@ -132,8 +139,11 @@ export const computeHeaderLayout = (
 
   const out: SlotGeometry[] = [];
   let x = 0;
-  for (let i = 0; i < ordered.length; i++) {
-    const entry = ordered[i]!;
+  // `forEach` would prevent early termination — we need a real loop to
+  // bail when a slot can't fit. Iterate via `entries()` so the index
+  // (for first-slot gap suppression) and the entry value flow together
+  // without indexed-access reads.
+  for (const [i, entry] of ordered.entries()) {
     const defaults = HEADER_DEFAULTS[entry.component];
     const spec = toSpec(entry.width);
     const min = spec.min ?? defaults.min;

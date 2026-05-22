@@ -137,9 +137,9 @@ export const parseKlippyLog = (tail: string, max: number = 20): readonly ParsedL
   const seen = new Set<string>();
   const out: ParsedLogError[] = [];
 
-  const lines = tail.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
+  // `for…of` yields each line as a plain `string` — no need to index
+  // back into the array (which would return `string | undefined`).
+  for (const line of tail.split('\n')) {
     if (!line || isNoise(line)) continue;
 
     const header = parseHeader(line);

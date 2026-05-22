@@ -248,6 +248,7 @@ export const App = ({ client, config }: AppProps) => {
           sensors={sensors}
           configs={config.sensors}
           hidden={hidden}
+          renderer={config.charts.renderer}
           width={width}
           height={chartHeight}
           x={0}

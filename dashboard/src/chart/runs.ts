@@ -1,29 +1,44 @@
 import type { ChartRow, ColoredRun } from './types';
 
 /**
- * Collapse adjacent cells with the same color into a single text run, so we
- * emit one `<Text>` per color change in a row instead of one per cell.
+ * Collapse adjacent cells that share the same `(color, bold)` attribute
+ * pair into a single text run, so the renderer can emit one `<Text>`
+ * element per attribute change in a row rather than one per cell.
+ *
+ * @param row - The row to scan.
+ * @returns Runs in left-to-right order. Each run's `text` is the
+ *          concatenation of its source cells' chars; `color` and `bold`
+ *          come from any cell within the run (they are all equal by
+ *          construction).
+ * @source
  */
 export const buildRuns = (row: ChartRow): readonly ColoredRun[] => {
   const runs: ColoredRun[] = [];
   let buffer: string[] = [];
   let currentColor: string | undefined;
+  let currentBold: boolean | undefined;
   let started = false;
 
+  const flush = (): void => {
+    if (buffer.length === 0) return;
+    const run: ColoredRun = currentBold
+      ? { text: buffer.join(''), color: currentColor, bold: true }
+      : { text: buffer.join(''), color: currentColor };
+    runs.push(run);
+  };
+
   for (const cell of row) {
-    if (!started || cell.color !== currentColor) {
-      if (buffer.length > 0) {
-        runs.push({ text: buffer.join(''), color: currentColor });
-      }
+    const cellBold = cell.bold === true;
+    if (!started || cell.color !== currentColor || cellBold !== currentBold) {
+      flush();
       buffer = [cell.char];
       currentColor = cell.color;
+      currentBold = cellBold;
       started = true;
     } else {
       buffer.push(cell.char);
     }
   }
-  if (buffer.length > 0) {
-    runs.push({ text: buffer.join(''), color: currentColor });
-  }
+  flush();
   return runs;
 };

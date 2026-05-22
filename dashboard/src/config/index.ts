@@ -83,6 +83,49 @@ export interface LayoutConfig {
 }
 
 /**
+ * Startup / connection-bring-up knobs.
+ *
+ * Klipper printers in sleep mode can take a while to wake — the socket
+ * either refuses or hangs during that window. {@link useReconnectingClient}
+ * keeps reattempting the websocket open every `retryIntervalMs` while the
+ * loading dialog is up; if the total wait exceeds
+ * `connectionTimeoutMs` the dialog flips to a "still trying" state without
+ * actually giving up.
+ * @source
+ */
+export interface StartupConfig {
+  /**
+   * How long (ms) to wait for the initial connection before the loading
+   * dialog switches into a "still trying" message. Retries continue in
+   * the background — this is a UI threshold, not a hard give-up.
+   */
+  readonly connectionTimeoutMs: number;
+  /** Time (ms) between websocket retry attempts during initial bring-up. */
+  readonly retryIntervalMs: number;
+}
+
+/**
+ * Renderer choice for the temperature chart's plot area.
+ *
+ * - `'palette'` — original box-drawing characters (`╭`, `╮`, `╰`, `╯`,
+ *   `─`, `│`). One mark per terminal cell.
+ * - `'braille'` — Unicode braille glyphs (U+2800–U+28FF). Each terminal
+ *   cell encodes a 2×4 dot grid, giving 2× horizontal and 4× vertical
+ *   resolution. Steep slopes draw as smooth lines instead of stair-steps.
+ * @source
+ */
+export type ChartRenderer = 'palette' | 'braille';
+
+/**
+ * Temperature-chart configuration knobs.
+ * @source
+ */
+export interface ChartsConfig {
+  /** Which character set to use when plotting the temperature graph. */
+  readonly renderer: ChartRenderer;
+}
+
+/**
  * Console-panel configuration knobs.
  * @source
  */
@@ -116,6 +159,8 @@ export interface DashboardConfig {
   readonly sampleIntervalMs: number;
   readonly console: ConsoleConfig;
   readonly layout: LayoutConfig;
+  readonly startup: StartupConfig;
+  readonly charts: ChartsConfig;
 }
 
 const envServer = process.env.MOONRAKER_HOST ?? '192.168.0.96';
@@ -173,7 +218,12 @@ const sensors: readonly SensorConfig[] = [
   },
 ];
 
-export const config: DashboardConfig = {
+// `satisfies` (TS 4.9+) checks that the literal conforms to
+// `DashboardConfig` while preserving the narrow inferred types of its
+// fields — so e.g. `config.layout.header` keeps its tuple length and
+// `config.console.naturalScroll` stays a literal `false` rather than
+// widening to `boolean`. Useful for callers that read this constant.
+export const config = {
   client: {
     API: {
       connection: {
@@ -198,4 +248,11 @@ export const config: DashboardConfig = {
       { component: 'system-stats' },
     ],
   },
-};
+  startup: {
+    connectionTimeoutMs: 30_000,
+    retryIntervalMs: 2_000,
+  },
+  charts: {
+    renderer: 'braille',
+  },
+} as const satisfies DashboardConfig;

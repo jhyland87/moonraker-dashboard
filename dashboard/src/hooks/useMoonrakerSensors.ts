@@ -32,8 +32,11 @@ const buildInitialSensors = (configs: readonly SensorConfig[]): SensorsState =>
 
 const computeChangeRate = (samples: readonly TemperatureSample[]): number | undefined => {
   if (samples.length < 2) return undefined;
-  const last = samples[samples.length - 1]!;
-  const prev = samples[samples.length - 2]!;
+  const last = samples[samples.length - 1];
+  const prev = samples[samples.length - 2];
+  // `noUncheckedIndexedAccess` requires these guards even though the
+  // length check above guarantees both slots are populated.
+  if (last === undefined || prev === undefined) return undefined;
   const dtSec = (last.timestamp - prev.timestamp) / 1000;
   if (dtSec <= 0) return undefined;
   return (last.temperature - prev.temperature) / dtSec;
@@ -122,16 +125,16 @@ const samplesFromStore = (
   const slice = Math.min(temps.length, historyLength);
   const start = temps.length - slice;
   const now = Date.now();
-  const samples: TemperatureSample[] = new Array(slice);
-  for (let i = 0; i < slice; i++) {
+  // `Array.from({length, …}, mapper)` is the Google-style replacement for
+  // `new Array(n)` + index assignment — produces a dense ordinary array.
+  return Array.from<unknown, TemperatureSample>({ length: slice }, (_, i) => {
     const idx = start + i;
-    samples[i] = {
+    return {
       timestamp: now - (slice - i - 1) * TEMP_STORE_INTERVAL_MS,
       temperature: temps[idx] ?? 0,
       target: targets[idx] ?? 0,
     };
-  }
-  return samples;
+  });
 };
 
 const seedFromTemperatureStore = (

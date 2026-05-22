@@ -27,8 +27,13 @@ export const buildSeries = (
 ): readonly ChartSeries[] => {
   const series: ChartSeries[] = [];
 
-  for (let i = configs.length - 1; i >= 0; i--) {
-    const cfg = configs[i]!;
+  // Reverse-iterating gives the first-table-row series the *latest*
+  // draw position (so it paints on top). `.slice().reverse()` makes
+  // each iteration receive a real `SensorConfig` instead of the
+  // `T | undefined` we'd get from indexed access.
+  const reversed = configs.slice().reverse();
+
+  for (const cfg of reversed) {
     if (!cfg.hasTarget) continue;
     if (hidden.has(cfg.toggleKey)) continue;
     const sensor = state[cfg.objectName];
@@ -41,8 +46,7 @@ export const buildSeries = (
     });
   }
 
-  for (let i = configs.length - 1; i >= 0; i--) {
-    const cfg = configs[i]!;
+  for (const cfg of reversed) {
     if (hidden.has(cfg.toggleKey)) continue;
     const sensor = state[cfg.objectName];
     if (!sensor) continue;
@@ -51,6 +55,10 @@ export const buildSeries = (
       color: cfg.color,
       values: sensor.samples.map((s) => s.temperature),
       timestamps: sensor.samples.map((s) => s.timestamp),
+      // Current-temperature lines get the bold treatment so they read
+      // more strongly than their dim target reference lines (which are
+      // pushed earlier in this array and intentionally stay light).
+      bold: true,
     });
   }
 

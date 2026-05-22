@@ -282,9 +282,14 @@ export const BedMeshPanel = ({ data, error, y, x, width, height }: BedMeshPanelP
       {Array.from({ length: gradientTermRows }, (_, gr) => {
         const topIdx = gr * 2;
         const bottomIdx = topIdx + 1;
-        const top = gradientColors[topIdx]!;
+        const top = gradientColors[topIdx];
+        const labelValue = gradientValues[topIdx];
+        // `gradientTermRows = ceil(gradientStops / 2)` so `topIdx`
+        // always falls within `gradientColors` / `gradientValues`. The
+        // guards keep `noUncheckedIndexedAccess` happy and bail
+        // gracefully if those invariants ever change.
+        if (top === undefined || labelValue === undefined) return null;
         const bottom = bottomIdx < gradientStops ? gradientColors[bottomIdx] : undefined;
-        const labelValue = gradientValues[topIdx]!;
         const rowY = heatTopY + gr;
         return (
           <Text key={`g${gr}`} x={x} y={rowY} width={width} height={1} block>

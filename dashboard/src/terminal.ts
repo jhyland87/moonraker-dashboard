@@ -37,10 +37,21 @@ const restoreTerminal = (): void => {
   }
 };
 
+/** Callback shape used by both write overloads. */
+type WriteCallback = (err?: Error | null) => void;
+
 /**
- * Strip every `\x1bc` (RIS) sequence from a chunk before forwarding to the
- * original write. Works on both strings and Buffers without forcing an
- * unnecessary encoding round-trip when there's no RIS present.
+ * Strip every `\x1bc` (RIS) sequence from a chunk before forwarding to
+ * the original write. Works on both strings and Buffers without forcing
+ * an unnecessary encoding round-trip when there's no RIS present.
+ *
+ * The wrapper mirrors `process.stdout.write`'s two real overloads:
+ *   write(chunk, callback?)
+ *   write(chunk, encoding, callback?)
+ * Both are forwarded to the original, with the chunk filtered. No
+ * `any` is needed because we destructure the two overload shapes by
+ * runtime type check on the second argument.
+ * @source
  */
 const stripRisFromStdout = (): void => {
   const original = process.stdout.write.bind(process.stdout);
@@ -56,18 +67,34 @@ const stripRisFromStdout = (): void => {
     return b;
   };
 
-  // The Writable.write overloads make this a pain to type cleanly; we forward
-  // every overload through to the original.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  process.stdout.write = ((chunk: any, ...rest: any[]) => {
-    if (typeof chunk === 'string') {
-      return original(stripString(chunk), ...rest);
+  const filter = (chunk: string | Uint8Array): string | Uint8Array => {
+    if (typeof chunk === 'string') return stripString(chunk);
+    if (Buffer.isBuffer(chunk)) return stripBuffer(chunk);
+    return chunk;
+  };
+
+  function wrapped(chunk: string | Uint8Array, cb?: WriteCallback): boolean;
+  function wrapped(
+    chunk: string | Uint8Array,
+    encoding: BufferEncoding,
+    cb?: WriteCallback,
+  ): boolean;
+  function wrapped(
+    chunk: string | Uint8Array,
+    encodingOrCb?: BufferEncoding | WriteCallback,
+    cb?: WriteCallback,
+  ): boolean {
+    const filtered = filter(chunk);
+    if (typeof encodingOrCb === 'function') {
+      return original(filtered, encodingOrCb);
     }
-    if (Buffer.isBuffer(chunk)) {
-      return original(stripBuffer(chunk), ...rest);
+    if (typeof encodingOrCb === 'string') {
+      return original(filtered, encodingOrCb, cb);
     }
-    return original(chunk, ...rest);
-  }) as typeof process.stdout.write;
+    return original(filtered);
+  }
+
+  process.stdout.write = wrapped as typeof process.stdout.write;
 };
 
 /**

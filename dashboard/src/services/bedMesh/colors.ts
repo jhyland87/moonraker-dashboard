@@ -68,7 +68,16 @@ const HEX = '0123456789abcdef';
  * @returns Two-character hex.
  * @source
  */
-const hex2 = (n: number): string => HEX[(n >> 4) & 15]! + HEX[n & 15]!;
+const hex2 = (n: number): string => {
+  // The two index expressions are masked to 0-15 so they always fall
+  // within `HEX`'s bounds, but `noUncheckedIndexedAccess` still narrows
+  // each read to `string | undefined`. The `?? '0'` fallbacks are
+  // unreachable in practice — keep the code honest rather than reach
+  // for a non-null assertion.
+  const hi = HEX[(n >> 4) & 15] ?? '0';
+  const lo = HEX[n & 15] ?? '0';
+  return hi + lo;
+};
 
 /**
  * Format an RGB triple as a `#rrggbb` hex string suitable for
@@ -113,16 +122,23 @@ export const meshValToHex = (
   min: number = DEFAULT_DOMAIN_MIN,
   max: number = DEFAULT_DOMAIN_MAX,
 ): string => {
-  if (!Number.isFinite(v) || max <= min) {
-    return PALETTE[Math.floor(PALETTE.length / 2)]!;
-  }
+  // PALETTE is a non-empty `as const` tuple, but indexed access is
+  // still typed as `string | undefined` under `noUncheckedIndexedAccess`.
+  // Resolve the mid stop once with a defensive fallback rather than a
+  // non-null assertion.
+  const mid = PALETTE[Math.floor(PALETTE.length / 2)] ?? '#000000';
+  if (!Number.isFinite(v) || max <= min) return mid;
+
   const t = Math.max(0, Math.min(1, (v - min) / (max - min)));
   const scaled = t * (PALETTE_RGB.length - 1);
   const idx = Math.floor(scaled);
-  if (idx >= PALETTE_RGB.length - 1) return PALETTE[PALETTE.length - 1]!;
+  if (idx >= PALETTE_RGB.length - 1) {
+    return PALETTE[PALETTE.length - 1] ?? mid;
+  }
+  const a = PALETTE_RGB[idx];
+  const b = PALETTE_RGB[idx + 1];
+  if (a === undefined || b === undefined) return mid;
   const frac = scaled - idx;
-  const a = PALETTE_RGB[idx]!;
-  const b = PALETTE_RGB[idx + 1]!;
   return rgbHex([
     lerp(a[0], b[0], frac),
     lerp(a[1], b[1], frac),

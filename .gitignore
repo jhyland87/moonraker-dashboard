@@ -8,3 +8,4 @@ dist/
 !.env.example
 dev/
 .claude/
+CLAUDE.md

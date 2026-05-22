@@ -59,16 +59,17 @@ const targetGenerators: Record<string, (i: number) => number> = {
 };
 
 // Build series with the same back-to-front ordering rule as App.tsx.
+// `slice().reverse()` flips the array so each `for..of` iteration yields
+// a real `SensorConfig` rather than an indexed-access `T | undefined`.
 const series: ChartSeries[] = [];
-for (let i = config.sensors.length - 1; i >= 0; i--) {
-  const cfg = config.sensors[i]!;
+const reversed = config.sensors.slice().reverse();
+for (const cfg of reversed) {
   if (!cfg.hasTarget) continue;
   const gen = targetGenerators[cfg.objectName];
   if (!gen) continue;
   series.push(makeSeries(`${cfg.label} tgt`, cfg.dimColor, gen));
 }
-for (let i = config.sensors.length - 1; i >= 0; i--) {
-  const cfg = config.sensors[i]!;
+for (const cfg of reversed) {
   const gen = generators[cfg.objectName];
   if (!gen) continue;
   series.push(makeSeries(cfg.label, cfg.color, gen));

@@ -176,8 +176,13 @@ export const useGcodeConsole = (
     };
     const pruneOldLocalSends = (): void => {
       const cutoff = Date.now() / 1000 - SEND_TTL_SEC;
+      // Iterate descending so in-place `splice` doesn't shift indices
+      // we haven't visited yet. Read the entry through a local + guard
+      // so we don't lean on the non-null assertion operator.
       for (let i = recentLocalSends.length - 1; i >= 0; i--) {
-        if (recentLocalSends[i]!.localTime < cutoff) recentLocalSends.splice(i, 1);
+        const entry = recentLocalSends[i];
+        if (entry === undefined) continue;
+        if (entry.localTime < cutoff) recentLocalSends.splice(i, 1);
       }
     };
     // Stored on the hook closure so `send()` (created outside this effect)

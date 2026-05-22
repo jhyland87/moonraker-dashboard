@@ -31,25 +31,41 @@ export const interpolateMesh = (
   if (rows === 0 || cols === 0) return [];
   const newRows = rows * 2 - 1;
   const newCols = cols * 2 - 1;
+  // Avoid `new Array(newCols)` per the Google style guide — it produces
+  // a sparse array. `Array.from` gives a dense one.
   const out: number[][] = Array.from({ length: newRows }, () =>
-    new Array<number>(newCols).fill(0),
+    Array.from<number>({ length: newCols }).fill(0),
   );
   // Place originals + horizontal synthetic columns on even rows.
-  for (let r = 0; r < rows; r++) {
-    const dstRow = out[r * 2]!;
-    const srcRow = matrix[r]!;
-    for (let c = 0; c < cols; c++) dstRow[c * 2] = srcRow[c]!;
-    for (let c = 0; c < cols - 1; c++) {
-      dstRow[c * 2 + 1] = (srcRow[c]! + srcRow[c + 1]!) / 2;
+  // Use forEach so the row variable is a plain `number[]` (not
+  // `number[] | undefined`) at each iteration, avoiding indexed-access
+  // reads that would otherwise need non-null assertions.
+  matrix.forEach((srcRow, r) => {
+    const dstRow = out[r * 2];
+    if (dstRow === undefined) return;
+    for (let c = 0; c < cols; c++) {
+      const v = srcRow[c];
+      if (v === undefined) continue;
+      dstRow[c * 2] = v;
     }
-  }
+    for (let c = 0; c < cols - 1; c++) {
+      const a = srcRow[c];
+      const b = srcRow[c + 1];
+      if (a === undefined || b === undefined) continue;
+      dstRow[c * 2 + 1] = (a + b) / 2;
+    }
+  });
   // Fill synthetic rows as the mean of the rows above and below.
   for (let r = 0; r < rows - 1; r++) {
-    const above = out[r * 2]!;
-    const below = out[(r + 1) * 2]!;
-    const mid = out[r * 2 + 1]!;
+    const above = out[r * 2];
+    const below = out[(r + 1) * 2];
+    const mid = out[r * 2 + 1];
+    if (above === undefined || below === undefined || mid === undefined) continue;
     for (let c = 0; c < newCols; c++) {
-      mid[c] = (above[c]! + below[c]!) / 2;
+      const a = above[c];
+      const b = below[c];
+      if (a === undefined || b === undefined) continue;
+      mid[c] = (a + b) / 2;
     }
   }
   return out;

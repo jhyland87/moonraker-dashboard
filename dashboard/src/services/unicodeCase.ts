@@ -23,6 +23,10 @@ const SUBSCRIPT_MAP: Readonly<Record<string, string>> = {
   // U+2024 ONE DOT LEADER renders as a small period at baseline height —
   // matches what the bash subset table uses for `.`.
   '.': '․',
+  // U+A789 MODIFIER LETTER COLON renders as a small colon at baseline
+  // height; the standard `:` would visually swamp the surrounding
+  // subscript digits in a time label like "12:34:56".
+  ':': '꞉',
   '=': '₌',
   '(': '₍',
   ')': '₎',
