@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Text, useInput, useMouse } from 'react-curse';
 
 import type { GcodeEntry } from '../hooks/useGcodeConsole';
+import type { GcodeHelp } from '../hooks/useGcodeHelp';
 
 interface ConsolePanelProps {
   readonly entries: readonly GcodeEntry[];
@@ -18,10 +19,19 @@ interface ConsolePanelProps {
    * toggle, for example).
    */
   readonly onInputFocusChange?: (focused: boolean) => void;
+  /**
+   * Klipper extended-command dictionary. Drives Tab-autocomplete and the
+   * suggestion list shown above the input. May be empty before the first
+   * `printer.gcode.help` reply lands; autocomplete just stays inert.
+   */
+  readonly commands?: GcodeHelp;
   readonly y: number;
   readonly width: number;
   readonly height: number;
 }
+
+/** Max suggestions rendered above the input row at once. */
+const MAX_SUGGESTIONS = 5;
 
 const formatTime = (epochSec: number): string => {
   const d = new Date(epochSec * 1000);
@@ -55,6 +65,7 @@ export const ConsolePanel = ({
   debug,
   onToggleDebug,
   onInputFocusChange,
+  commands,
   y,
   width,
   height,
@@ -64,11 +75,55 @@ export const ConsolePanel = ({
   // Distance from the live tail, in entries. 0 = following live; >0 = paused.
   const [scrollOffset, setScrollOffset] = useState(0);
   const [inputFocused, setInputFocused] = useState(false);
+  // Highlight index into `matches`. Always meaningful when `matches.length > 0`
+  // — the first match starts highlighted, so Enter immediately sends it. Reset
+  // to 0 on every keystroke that changes the prefix so a fresh narrowing of
+  // the list lands the user on the top result.
+  const [suggestionIdx, setSuggestionIdx] = useState(0);
   // The shape of "sent commands" the user has cycled through with Up/Down.
   const sentHistory = useMemo(
     () => entries.filter((e) => e.type === 'command').map((e) => e.message),
     [entries],
   );
+
+  // Suggestion source: stable, sorted list of known command names.
+  const commandNames = useMemo(
+    () => (commands ? Object.keys(commands).sort() : []),
+    [commands],
+  );
+
+  // First whitespace-separated token of the draft. We only suggest while the
+  // user is still typing the command — once they've typed a space, they're
+  // onto args (parameters) and suggestions would be noise.
+  const firstToken = useMemo(() => {
+    const m = /^(\S+)/.exec(draft);
+    return m ? m[1] ?? '' : '';
+  }, [draft]);
+  const tokenIsCommand = firstToken.length > 0 && !/\s/.test(draft);
+
+  // Case-insensitive prefix match against the draft's first token.
+  // Up/Down/Tab/Enter never modify the draft until the user *accepts* a
+  // suggestion, so the prefix stays stable while they browse — no need for
+  // a separate "anchor" state.
+  const matches = useMemo(() => {
+    if (!inputFocused || !tokenIsCommand || commandNames.length === 0) return [];
+    const needle = firstToken.toLowerCase();
+    if (needle.length === 0) return [];
+    const out: string[] = [];
+    for (const name of commandNames) {
+      if (name.toLowerCase().startsWith(needle)) {
+        out.push(name);
+        if (out.length >= MAX_SUGGESTIONS) break;
+      }
+    }
+    return out;
+  }, [inputFocused, tokenIsCommand, commandNames, firstToken]);
+
+  // Clamp highlight if `matches` shrinks (e.g. user typed another character
+  // that narrowed the list past the current selection).
+  useEffect(() => {
+    if (suggestionIdx >= matches.length) setSuggestionIdx(0);
+  }, [matches.length, suggestionIdx]);
 
   useInput((input) => {
     // react-curse delivers control sequences as raw strings.
@@ -102,26 +157,50 @@ export const ConsolePanel = ({
     }
 
     // Input mode — typing/editing.
+    const autocompleteOpen = matches.length > 0;
+    const highlighted = autocompleteOpen ? matches[suggestionIdx] : undefined;
+
     if (input === '\x1b') {
       // Esc defocuses (back to view), without closing.
       setInputFocused(false);
       setHistoryIdx(null);
+      setSuggestionIdx(0);
       return;
     }
     if (input === '\r' || input === '\n') {
-      if (draft.trim()) onSubmit(draft);
+      // Enter — if a suggestion is highlighted, send *that* command (the user
+      // navigated to it via arrows). Otherwise send whatever's in the draft.
+      const toSend = highlighted ?? draft;
+      if (toSend.trim()) onSubmit(toSend);
       setDraft('');
       setHistoryIdx(null);
+      setSuggestionIdx(0);
       setScrollOffset(0); // Snap to live tail so the response is visible.
+      return;
+    }
+    if (input === '\t') {
+      // Tab — apply the highlighted suggestion to the draft (with trailing
+      // space so the user can immediately type args). Does NOT send. No-op
+      // when no suggestions are visible.
+      if (!autocompleteOpen || highlighted === undefined) return;
+      setDraft(`${highlighted} `);
+      setHistoryIdx(null);
+      setSuggestionIdx(0);
       return;
     }
     if (input === '\x7f' || input === '\b') {
       setDraft((d) => d.slice(0, -1));
       setHistoryIdx(null);
+      setSuggestionIdx(0);
       return;
     }
     if (input === '\x1b[A' || input === '\x10') {
-      // Up arrow / Ctrl-P → previous command
+      // Up arrow / Ctrl-P — navigate suggestions when the list is open,
+      // otherwise cycle through sent-command history.
+      if (autocompleteOpen) {
+        setSuggestionIdx((idx) => (idx - 1 + matches.length) % matches.length);
+        return;
+      }
       if (sentHistory.length === 0) return;
       setHistoryIdx((idx) => {
         if (idx === null) {
@@ -136,8 +215,13 @@ export const ConsolePanel = ({
       return;
     }
     if (input === '\x1b[B' || input === '\x0e') {
-      // Down arrow / Ctrl-N → next command. Past the end (or when not in
-      // history mode), clear the draft so the input is empty.
+      // Down arrow / Ctrl-N — navigate suggestions when the list is open,
+      // otherwise step toward newer history entries (or clear the draft past
+      // the end).
+      if (autocompleteOpen) {
+        setSuggestionIdx((idx) => (idx + 1) % matches.length);
+        return;
+      }
       if (historyIdx === null) {
         if (draft !== '') setDraft('');
         return;
@@ -156,13 +240,25 @@ export const ConsolePanel = ({
     if (input.length === 1 && input >= ' ' && input !== '\x7f') {
       setDraft((d) => d + input);
       setHistoryIdx(null);
+      setSuggestionIdx(0);
     }
   },
   // Deps: react-curse defaults to `[]`, which would freeze the callback's
   // closure at first mount — meaning `inputFocused` would always read as
   // `false` and typing/history-nav would be broken. Re-register the handler
   // whenever any state it reads changes.
-  [inputFocused, draft, historyIdx, sentHistory, entries.length, onClose, onSubmit, onToggleDebug],
+  [
+    inputFocused,
+    draft,
+    historyIdx,
+    sentHistory,
+    entries.length,
+    onClose,
+    onSubmit,
+    onToggleDebug,
+    matches,
+    suggestionIdx,
+  ],
   );
 
   // Auto-clear historyIdx if the underlying history shrinks/grows under us.
@@ -179,7 +275,11 @@ export const ConsolePanel = ({
   }, [inputFocused, onInputFocusChange]);
 
   const headerH = 1;
-  const footerH = 2; // hint row + input row
+  const suggestionsH = matches.length; // 0 when none — collapses cleanly.
+  // Hint row is suppressed while the suggestion list is visible (its keys are
+  // the autocomplete keys — showing both is redundant and steals a body row).
+  const showHint = suggestionsH === 0;
+  const footerH = (showHint ? 1 : 0) + suggestionsH + 1; // hint? + suggestions + input
   const bodyH = Math.max(1, height - headerH - footerH);
 
   // When new entries arrive while scrolled back, advance the offset so the
@@ -300,13 +400,44 @@ export const ConsolePanel = ({
         );
       })}
 
-      <Text x={0} y={y + height - footerH} width={width} height={1} block>
-        <Text x={1} color="BrightBlack" dim>
-          {inputFocused
-            ? 'Enter to send · ↑/↓ history · Esc to stop typing'
-            : 'i to type · q/c/Esc to close · d to toggle debug · ↑/↓ scroll'}
+      {showHint && (
+        <Text x={0} y={y + height - footerH} width={width} height={1} block>
+          <Text x={1} color="BrightBlack" dim>
+            {inputFocused
+              ? 'Enter to send · ↑/↓ history · Tab autocomplete · Esc to stop typing'
+              : 'i to type · q/c/Esc to close · d to toggle debug · ↑/↓ scroll'}
+          </Text>
         </Text>
-      </Text>
+      )}
+      {/* Suggestion rows — only present when matches.length > 0. Rendered
+          between the hint and the input. The currently-highlighted row
+          (suggestionIdx) is the one Enter sends and Tab fills into the
+          input; arrows move the highlight. */}
+      {matches.map((cmd, i) => {
+        const row = y + height - 1 - suggestionsH + i;
+        const isActive = i === suggestionIdx;
+        const nameW = Math.min(28, Math.max(...matches.map((m) => m.length), 1));
+        const description = commands?.[cmd] ?? '';
+        const descW = Math.max(1, width - 3 - nameW - 2);
+        return (
+          <Text key={`sug${row}-${i}`} x={0} y={row} width={width} height={1} block>
+            <Text x={1} color={isActive ? 'Yellow' : 'BrightBlack'} bold={isActive}>
+              {isActive ? '▶' : ' '}
+            </Text>
+            <Text
+              x={3}
+              color={isActive ? 'Black' : 'Cyan'}
+              background={isActive ? 'Yellow' : undefined}
+              bold
+            >
+              {cmd.padEnd(nameW, ' ')}
+            </Text>
+            <Text x={3 + nameW + 2} color={isActive ? 'White' : 'BrightBlack'} dim={!isActive}>
+              {truncate(description, descW)}
+            </Text>
+          </Text>
+        );
+      })}
       <Text x={0} y={y + height - 1} width={width} height={1} block>
         <Text x={1} color={inputFocused ? 'Yellow' : 'BrightBlack'} bold dim={!inputFocused}>
           {'> '}

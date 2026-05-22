@@ -13,6 +13,7 @@ import { TemperatureChartPanel } from './components/TemperatureChartPanel';
 import type { DashboardConfig } from './config/index';
 import { useBedMesh } from './hooks/useBedMesh';
 import { useGcodeConsole } from './hooks/useGcodeConsole';
+import { useGcodeHelp } from './hooks/useGcodeHelp';
 import { useKlipperStats } from './hooks/useKlipperStats';
 import { useMachineProcStats } from './hooks/useMachineProcStats';
 import { useMoonrakerSensors } from './hooks/useMoonrakerSensors';
@@ -74,6 +75,7 @@ export const App = ({ client, config }: AppProps) => {
   const printerErrors = usePrinterErrors(client);
   const [debug, setDebug] = useState<boolean>(config.console.debug);
   const gcodeConsole = useGcodeConsole(client, { debug });
+  const gcodeHelp = useGcodeHelp(client);
   const procStats = useMachineProcStats(client);
   const klipperStats = useKlipperStats(client);
   const bedMesh = useBedMesh(client);
@@ -264,6 +266,7 @@ export const App = ({ client, config }: AppProps) => {
           debug={debug}
           onToggleDebug={handleToggleDebug}
           onInputFocusChange={setConsoleInputFocused}
+          commands={gcodeHelp}
           y={chartY + chartHeight}
           width={width}
           height={consoleHeight}
