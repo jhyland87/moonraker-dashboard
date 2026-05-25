@@ -137,14 +137,25 @@ export const useBedMesh = (client: MoonrakerClient): UseBedMeshResult => {
     const onUpdate = (status: PrinterStatus): void => {
       const partial = status.bed_mesh as RawBedMesh | undefined;
       if (!partial) return;
-      // status_update deltas are partial — but a bed_mesh update covers the
-      // whole thing in practice. Re-parse defensively from a merge with what
-      // we already have so a partial doesn't drop the matrix.
+      // status_update deltas only contain the fields that changed. In
+      // practice Klipper sends the full bed_mesh blob on calibration /
+      // profile load, but to be safe we merge against the prior parsed
+      // data so a stray partial (e.g. mesh_matrix-only) doesn't blank
+      // out coordinate labels or the probed-matrix overlay.
+      //
+      // Reconstructing `mesh_min` / `mesh_max` from the previously-
+      // parsed `params` is the only awkward bit — we collapsed those
+      // raw fields into `params.min_x` / etc. on the way in, so we
+      // re-emit them on the way back through parseBedMesh.
       setData((prev) => {
         const merged: RawBedMesh = {
           profile_name: partial.profile_name ?? prev?.profileName,
-          mesh_min: partial.mesh_min,
-          mesh_max: partial.mesh_max,
+          mesh_min:
+            partial.mesh_min ??
+            (prev ? [prev.params.min_x, prev.params.min_y] : undefined),
+          mesh_max:
+            partial.mesh_max ??
+            (prev ? [prev.params.max_x, prev.params.max_y] : undefined),
           probed_matrix: partial.probed_matrix ?? prev?.probedMatrix,
           mesh_matrix: partial.mesh_matrix ?? prev?.meshMatrix,
           profiles: partial.profiles,

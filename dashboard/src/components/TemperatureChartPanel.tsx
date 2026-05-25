@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 
 import { AsciiLineChart } from './AsciiLineChart';
+import { PanelFrame } from './PanelFrame';
 import type { ChartRenderer, ChartSeries } from '../chart/index';
 import { buildSeries } from '../services/chartSeries';
 import type { SensorConfig, SensorsState } from '../types/index';
@@ -63,14 +64,19 @@ export const TemperatureChartPanel = ({
     [sensors, configs, hidden],
   );
   return (
-    <AsciiLineChart
-      series={series}
-      width={width}
-      height={height}
-      x={x}
-      y={y}
-      theme={CHART_THEME}
-      renderer={renderer}
-    />
+    <>
+      <AsciiLineChart
+        series={series}
+        width={Math.max(1, width - 2)}
+        height={Math.max(1, height - 2)}
+        x={x + 1}
+        y={y + 1}
+        theme={CHART_THEME}
+        renderer={renderer}
+      />
+      {/* Border drawn last so its side bars overwrite any block-fill
+          rendered by the chart along the frame columns. */}
+      <PanelFrame x={x} y={y} width={width} height={height} title="Temperature" />
+    </>
   );
 };

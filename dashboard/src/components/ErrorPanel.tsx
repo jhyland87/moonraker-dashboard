@@ -1,10 +1,12 @@
 import { Text } from 'react-curse';
 
+import { PanelFrame } from './PanelFrame';
 import type { ParsedLogError } from '../services/parseKlippyLog';
 import type { KlippyState } from '../hooks/usePrinterErrors';
 
 export const ERROR_PANEL_BODY_ROWS = 6;
-export const ERROR_PANEL_HEIGHT = 1 + ERROR_PANEL_BODY_ROWS;
+/** Top border + N body rows + bottom border. */
+export const ERROR_PANEL_HEIGHT = 1 + ERROR_PANEL_BODY_ROWS + 1;
 
 interface ErrorPanelProps {
   readonly klippyState: KlippyState;
@@ -53,19 +55,17 @@ export const ErrorPanel = ({
     body.push({ key: `pad${body.length}`, text: '' });
   }
 
+  const innerX = 1;
+  const innerW = Math.max(1, width - 2);
+
   return (
     <>
-      <Text x={0} y={y} width={width} height={1} background="Red" block>
-        <Text x={1} color="White" bold>
-          {header}
-        </Text>
-      </Text>
       {body.map((row, idx) => (
         <Text
           key={row.key}
-          x={0}
+          x={innerX}
           y={y + 1 + idx}
-          width={width}
+          width={innerW}
           height={1}
           color={row.dim ? 'BrightBlack' : 'Red'}
           block
@@ -73,6 +73,16 @@ export const ErrorPanel = ({
           <Text x={1}>{row.text}</Text>
         </Text>
       ))}
+      {/* Border drawn last; title carries the Klipper-state header text. */}
+      <PanelFrame
+        x={0}
+        y={y}
+        width={width}
+        height={ERROR_PANEL_HEIGHT}
+        title={header}
+        titleColor="Red"
+        accent="Red"
+      />
     </>
   );
 };

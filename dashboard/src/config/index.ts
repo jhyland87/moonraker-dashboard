@@ -56,30 +56,35 @@ export interface HeaderPanelLayoutEntry {
 }
 
 /**
- * Static UI-layout configuration. Currently controls the header row;
- * future versions may add slots for the main (chart) and bottom areas.
+ * Static UI-layout configuration. The dashboard renders as two stacked
+ * columns (Fluidd-style):
+ *
+ * - **Left column**: Print Status (fixed) → Sensors (fixed) → Temperature
+ *   chart (flexible) → Bed Mesh (flexible, when toggled visible with `h`).
+ * - **Right column**: Webcam (flexible, when toggled visible with `w`) →
+ *   Console (flexible, when toggled visible with `c`).
+ *
+ * Visible flexible panels in each column share remaining vertical space —
+ * toggling something off naturally rescales the neighbors.
+ *
  * @source
  */
 export interface LayoutConfig {
   /**
-   * Header components in left-to-right rendering order. Components not
-   * listed are not rendered. Duplicate components collapse to their
-   * first occurrence.
-   *
-   * Each entry can override width with a fixed cell count, a percentage
-   * of the row, or `"auto"` (use the panel's preferred width). `min` and
-   * `max` clamps can be applied on top of any of those.
-   *
-   * @example
-   * ```ts
-   * header: [
-   *   { component: 'sensor-table' },                              // auto (57 cells)
-   *   { component: 'print-status', width: { value: '40%', min: 40, max: 80 } },
-   *   { component: 'system-stats', width: 36 },                   // fixed
-   * ]
-   * ```
+   * Fractional horizontal split between the left and right columns
+   * (`0..1`). `0.5` gives a 50/50 split; `0.6` makes the left column 60%
+   * wide. Both columns floor at 20 cells to keep panels readable.
    */
-  readonly header: readonly HeaderPanelLayoutEntry[];
+  readonly columnSplit: number;
+  /**
+   * Header layout from the previous header-row design. Kept on the type
+   * for forward-compat with older configs — the new two-column layout
+   * ignores it. Will be removed once any external consumers migrate.
+   *
+   * @deprecated The header-row layout has been replaced by the two-column
+   *   layout. Setting this has no effect.
+   */
+  readonly header?: readonly HeaderPanelLayoutEntry[];
 }
 
 /**
@@ -147,6 +152,105 @@ export interface ConsoleConfig {
 }
 
 /**
+ * Webcam panel configuration knobs.
+ *
+ * The webcam server (mjpg-streamer / ustreamer / Crowsnest) runs on a
+ * separate port from Moonraker — typically `8080`, distinct from
+ * Moonraker's `7125`. Host/port/path are split here so each piece can be
+ * overridden independently (via env vars or programmatic config) without
+ * forcing the user to assemble the full URL by hand.
+ *
+ * @source
+ */
+export interface WebcamConfig {
+  /** Hostname or IP serving the webcam stream. Usually the printer host. */
+  readonly host: string;
+  /** Port the webcam HTTP server listens on (8080 for mjpg-streamer default). */
+  readonly port: number;
+  /**
+   * Use TLS when fetching from the webcam server. `true` → `https://`,
+   * `false` (default) → `http://`. Independent of the Moonraker
+   * connection's `secure` flag — many printers terminate TLS at a reverse
+   * proxy that fronts only some of the services. Set explicitly when
+   * your webcam server is behind HTTPS.
+   */
+  readonly secure?: boolean;
+  /**
+   * Path component of the snapshot URL — used by the manual `s` hotkey
+   * and by the print-status thumbnail's one-shot fetches. mjpg-streamer
+   * / ustreamer both expose snapshots at `/?action=snapshot`; some
+   * setups use `/snapshot`.
+   */
+  readonly snapshotPath: string;
+  /**
+   * Path component of the live-stream URL — a `multipart/x-mixed-replace`
+   * MJPEG endpoint. mjpg-streamer / ustreamer expose this at
+   * `/?action=stream`. Consumed by the webcam panel during active prints
+   * (or when the user manually starts the stream).
+   */
+  readonly streamPath: string;
+  /**
+   * Maximum frame rate to forward into React state, in frames per second.
+   * The MJPEG server may emit frames faster than this (often 15–30 FPS);
+   * frames arriving more often than `1000/streamMaxFps` ms are dropped.
+   * Keeps React render pressure bounded — every emitted frame triggers
+   * a full dashboard re-render plus an iTerm2 inline-image escape write.
+   *
+   * Reasonable values: 10–20 FPS for smooth video, 2–5 for a low-impact
+   * status view.
+   */
+  readonly streamMaxFps: number;
+}
+
+/**
+ * File browser configuration knobs. Controls the modal triggered by the
+ * `o` hotkey (or whichever key the central hotkeys registry maps).
+ *
+ * @source
+ */
+export interface FileBrowserConfig {
+  /**
+   * Moonraker file root to list. Defaults to `'gcodes'` (the print-file
+   * root). Other useful roots: `'config'`, `'logs'`, `'timelapse'`.
+   */
+  readonly root: string;
+  /**
+   * File extensions to show. Empty array shows everything in the root.
+   * Defaults to `['.gcode']` so the dashboard's print-job browser only
+   * surfaces printable files.
+   */
+  readonly extensions: readonly string[];
+  /**
+   * Column ids to render, in left-to-right order. Each id must exist in
+   * `services/fileBrowser.ts`'s `COLUMN_CATALOG`. Add more / reorder to
+   * taste — wider sets enable the modal's horizontal scrolling.
+   */
+  readonly visibleColumns: readonly string[];
+  /**
+   * Absolute path on disk where downloaded files land. The browser
+   * preserves the printer-side subdirectory layout under this root.
+   */
+  readonly downloadDir: string;
+  /**
+   * Render the gcode's slicer thumbnail inline next to each row, the way
+   * Fluidd and Mainsail do. Only takes effect when the host terminal
+   * supports iTerm2 inline images (other terminals silently ignore it).
+   *
+   * Costs a network fetch per visible file the first time it scrolls
+   * into view, plus an extra base64-encode + stdout write per row on
+   * every dashboard render. Thumbnails are PNGs (~1–6 KB each at the
+   * 100×100 size) and are cached in-process so the cost is one-time.
+   * Defaults to `false` so the browser is cheap by default; flip on
+   * if you want the Fluidd-style preview.
+   */
+  readonly showThumbnails: boolean;
+  /** Width (in terminal cells) of each row's inline thumbnail. */
+  readonly thumbnailCellW: number;
+  /** Height (in terminal cells) of each row's inline thumbnail. */
+  readonly thumbnailCellH: number;
+}
+
+/**
  * Top-level dashboard configuration object passed to {@link App}.
  * @source
  */
@@ -161,10 +265,16 @@ export interface DashboardConfig {
   readonly layout: LayoutConfig;
   readonly startup: StartupConfig;
   readonly charts: ChartsConfig;
+  readonly webcam: WebcamConfig;
+  readonly fileBrowser: FileBrowserConfig;
 }
 
 const envServer = process.env.MOONRAKER_HOST ?? '192.168.0.96';
 const envPort = process.env.MOONRAKER_PORT ? Number(process.env.MOONRAKER_PORT) : 7125;
+// Webcam server is usually on the same host but a different port — Klipper's
+// mjpg-streamer / ustreamer defaults to 8080, while Moonraker itself is 7125.
+const envWebcamHost = process.env.WEBCAM_HOST ?? envServer;
+const envWebcamPort = process.env.WEBCAM_PORT ? Number(process.env.WEBCAM_PORT) : 8080;
 
 /**
  * Sensor definitions mirroring `moonraker-cli`'s `status.graph` table.
@@ -242,11 +352,7 @@ export const config = {
     debug: false,
   },
   layout: {
-    header: [
-      { component: 'sensor-table' },
-      { component: 'print-status' },
-      { component: 'system-stats' },
-    ],
+    columnSplit: 0.5,
   },
   startup: {
     connectionTimeoutMs: 30_000,
@@ -254,5 +360,23 @@ export const config = {
   },
   charts: {
     renderer: 'braille',
+  },
+  webcam: {
+    host: envWebcamHost,
+    port: envWebcamPort,
+    snapshotPath: '/?action=snapshot',
+    streamPath: '/?action=stream',
+    streamMaxFps: 15,
+  },
+  fileBrowser: {
+    root: 'gcodes',
+    extensions: ['.gcode'],
+    visibleColumns: ['name', 'size', 'modified', 'printed', 'layers', 'duration', 'filament_g'],
+    downloadDir: process.env['HOME']
+      ? `${process.env['HOME']}/Downloads/moonraker-dashboard`
+      : './downloads',
+    showThumbnails: false,
+    thumbnailCellW: 4,
+    thumbnailCellH: 2,
   },
 } as const satisfies DashboardConfig;

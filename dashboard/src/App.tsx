@@ -1,25 +1,38 @@
 import type { MoonrakerClient } from '@jhyland87/moonraker-client';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useInput, useSize } from 'react-curse';
 
-import { BedMeshPanel } from './components/BedMeshPanel';
+import { BedMeshPanel, computeBedMeshPanelHeight } from './components/BedMeshPanel';
 import { ConsolePanel } from './components/ConsolePanel';
 import { ErrorPanel, ERROR_PANEL_HEIGHT } from './components/ErrorPanel';
+import { FileBrowserModal } from './components/FileBrowserModal';
+import { HelpModal } from './components/HelpModal';
 import { PrintStatusPanel, PRINT_PANEL_HEIGHT } from './components/PrintStatusPanel';
 import { SensorTable, sensorTableHeight } from './components/SensorTable';
 import { StatusBar } from './components/StatusBar';
 import { SystemStatsPanel, SYSTEM_PANEL_HEIGHT } from './components/SystemStatsPanel';
 import { TemperatureChartPanel } from './components/TemperatureChartPanel';
+import { WebcamPanel } from './components/WebcamPanel';
 import type { DashboardConfig } from './config/index';
 import { useBedMesh } from './hooks/useBedMesh';
 import { useGcodeConsole } from './hooks/useGcodeConsole';
 import { useGcodeHelp } from './hooks/useGcodeHelp';
 import { useKlipperStats } from './hooks/useKlipperStats';
 import { useMachineProcStats } from './hooks/useMachineProcStats';
+import { useWebcam } from './hooks/useWebcam';
 import { useMoonrakerSensors } from './hooks/useMoonrakerSensors';
 import { usePrintStatus } from './hooks/usePrintStatus';
 import { usePrinterErrors } from './hooks/usePrinterErrors';
-import { computeHeaderLayout, findSlot } from './services/headerLayout';
+import { useFileBrowser } from './hooks/useFileBrowser';
+import { useThumbnail } from './hooks/useThumbnail';
+import { solveColumn, type PanelSpec } from './services/columnLayout';
+import {
+  buildHotkeys,
+  dispatchHotkey,
+  type HotkeyActions,
+  type HotkeyContext,
+  type HotkeyState,
+} from './services/hotkeys';
 import { restoreTerminalNow } from './terminal';
 
 /**
@@ -76,90 +89,146 @@ export const App = ({ client, config }: AppProps) => {
   const [debug, setDebug] = useState<boolean>(config.console.debug);
   const gcodeConsole = useGcodeConsole(client, { debug });
   const gcodeHelp = useGcodeHelp(client);
+  const bedMesh = useBedMesh(client);
+  const webcam = useWebcam(config.webcam);
   const procStats = useMachineProcStats(client);
   const klipperStats = useKlipperStats(client);
-  const bedMesh = useBedMesh(client);
+  // Thumbnail for the currently-loaded gcode (whatever print_stats.filename
+  // says). Updates automatically when the filename changes between prints.
+  const thumbnail = useThumbnail(client, printStatus.filename);
   const showErrorPanel =
     printerErrors.klippyState === 'shutdown' || printerErrors.klippyState === 'error';
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
-  const [consoleOpen, setConsoleOpen] = useState(false);
+  // Console feed is open by default — it's a passive panel like the
+  // others, not a modal. Users can still hide it with `c` if they want
+  // the chart area back.
+  const [consoleOpen, setConsoleOpen] = useState(true);
   // Mirrors ConsolePanel.inputFocused. While the console's text input has
   // focus, every keystroke goes into the draft — sensor toggles and other
   // app-level shortcuts must stay out of the way. View-mode is unaffected.
   const [consoleInputFocused, setConsoleInputFocused] = useState(false);
   const [bedMeshOpen, setBedMeshOpen] = useState(false);
+  const [webcamOpen, setWebcamOpen] = useState(false);
+  // Fullscreen webcam — covers every other panel except the status bar.
+  // Only meaningful when `webcamOpen` is also true; closing the webcam
+  // panel via `w` resets this so we never end up with a phantom flag.
+  const [webcamFullscreen, setWebcamFullscreen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
+  const fileBrowser = useFileBrowser(client, config.fileBrowser);
 
-  // Map case-insensitive toggle key → sensor; built once per config change so
-  // the input handler stays cheap.
-  const toggleKeys = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const cfg of config.sensors) m.set(cfg.toggleKey.toLowerCase(), cfg.toggleKey);
-    return m;
-  }, [config.sensors]);
+  // ----- Auto-stream gate ------------------------------------------------
+  // Per spec: the webcam should stream automatically *only* during an
+  // active print. Outside a print, users fetch snapshots manually (`s`)
+  // when the panel is visible. The ref tracks the last observed
+  // print-state to detect transitions — we only `startStream` / `stopStream`
+  // on the change, not every render, so a manual `space` override isn't
+  // re-undone on the next React tick.
+  const lastPrintingRef = useRef(false);
+  useEffect(() => {
+    const isPrinting = printStatus.state === 'printing';
+    if (isPrinting && !lastPrintingRef.current) {
+      webcam.startStream();
+    } else if (!isPrinting && lastPrintingRef.current) {
+      webcam.stopStream();
+    }
+    lastPrintingRef.current = isPrinting;
+  }, [printStatus.state, webcam]);
 
-  useInput(
-    (input) => {
-      // Ctrl-C always quits, even from inside the console.
-      if (input === '\x03') {
-        client.close();
-        restoreTerminalNow();
-        process.exit(0);
-        return;
-      }
-      // Console input is focused — every keystroke is meant for the text
-      // input. Stay completely out of the way (no sensor toggles, no quit).
-      // View-mode of the console is *not* gated here: sensor toggles and
-      // other app-level shortcuts continue to work while the user is just
-      // watching the feed.
-      if (consoleInputFocused) return;
-
-      if (input === 'q') {
-        // When the console is open, `q` belongs to the console (closes it
-        // via ConsolePanel's view-mode handler). Only quit when the console
-        // is closed.
-        if (consoleOpen) return;
-        client.close();
-        // Bypass react-curse's exit path — write the rmcup sequence directly to
-        // the stdout fd (blocking syscall) and exit immediately. This guarantees
-        // the alt-screen is left before the process tears down, regardless of
-        // any stream-level buffering in `process.stdout`.
-        restoreTerminalNow();
-        process.exit(0);
-        return;
-      }
-      if (input === 'c' || input === 'C') {
-        // Same: when open, `c` is the console's close shortcut.
-        if (consoleOpen) return;
-        setConsoleOpen(true);
-        return;
-      }
-      if (input === 'h' || input === 'H') {
-        // Toggle the bed mesh visualization. When opening, kick off a fresh
-        // query so the data shown is current — bed_mesh doesn't change often
-        // but the user is explicitly asking to view it, so refresh on entry.
-        setBedMeshOpen((open) => {
-          if (!open) bedMesh.refresh();
-          return !open;
-        });
-        return;
-      }
-      if (input === '\x1b' && bedMeshOpen) {
-        // Esc closes the bed mesh panel when nothing else owns it.
-        setBedMeshOpen(false);
-        return;
-      }
-      const key = toggleKeys.get(input.toLowerCase());
-      if (key === undefined) return;
-      setHidden((prev) => {
-        const next = new Set(prev);
-        if (next.has(key)) next.delete(key);
-        else next.add(key);
+  // ----- Hotkey dispatch -------------------------------------------------
+  // Every keystroke flows through `services/hotkeys.ts` — the single
+  // source of truth for which keys exist, what they do, and when they
+  // fire. App.tsx supplies the state snapshot + the action callbacks;
+  // the dispatcher walks the list in declaration order and fires the
+  // first matching entry. Adding a hotkey is a one-place edit in
+  // `hotkeys.ts` and it appears in both the dispatcher and the help
+  // modal automatically.
+  const hotkeys = useMemo(() => buildHotkeys(config.sensors), [config.sensors]);
+  // Stable quit closure — used by both `q` and Ctrl-C hotkeys.
+  const quit = useCallback((): void => {
+    client.close();
+    // Bypass react-curse's exit path — write the rmcup sequence directly to
+    // the stdout fd (blocking syscall) and exit immediately. Guarantees the
+    // alt-screen is left before tear-down, regardless of any stream-level
+    // buffering in `process.stdout`.
+    restoreTerminalNow();
+    process.exit(0);
+  }, [client]);
+  // Toggle a single sensor's visibility. Bound here (rather than in
+  // `hotkeys.ts`) so the closure can capture `setHidden`.
+  const toggleSensorVisibility = useCallback((toggleKey: string): void => {
+    setHidden((prev) => {
+      const next = new Set(prev);
+      if (next.has(toggleKey)) next.delete(toggleKey);
+      else next.add(toggleKey);
+      return next;
+    });
+  }, []);
+  const toggleConsole = useCallback((): void => setConsoleOpen((prev) => !prev), []);
+  const refreshBedMesh = useCallback((): void => {
+    bedMesh.refresh();
+  }, [bedMesh]);
+  const webcamSnapshot = useCallback((): void => webcam.snapshot(), [webcam]);
+  const webcamToggleStream = useCallback((): void => {
+    if (webcam.mode === 'stream') webcam.stopStream();
+    else webcam.startStream();
+  }, [webcam]);
+  const toggleWebcamFullscreen = useCallback(
+    (): void => setWebcamFullscreen((prev) => !prev),
+    [],
+  );
+  // Wrapper around setWebcamOpen that also clears fullscreen on close —
+  // prevents a stale fullscreen flag from suppressing the rest of the
+  // UI the next time the panel is opened.
+  const toggleWebcamOpen = useCallback(
+    (updater: boolean | ((prev: boolean) => boolean)): void => {
+      setWebcamOpen((prev) => {
+        const next = typeof updater === 'function' ? updater(prev) : updater;
+        if (!next) setWebcamFullscreen(false);
         return next;
       });
     },
-    // Deps: react-curse defaults to `[]`, which freezes the closure at mount.
-    // Include every state value the handler reads.
-    [consoleInputFocused, consoleOpen, bedMeshOpen, bedMesh, toggleKeys, client],
+    [],
+  );
+
+  // Bundle state + actions into a HotkeyContext. Refresh on every render
+  // via a ref so the input handler's deps stay minimal — the closure
+  // always reads the latest values without re-registering the listener.
+  const ctxRef = useRef<HotkeyContext | null>(null);
+  const hotkeyState: HotkeyState = {
+    consoleInputFocused,
+    consoleOpen,
+    bedMeshOpen,
+    webcamOpen,
+    helpOpen,
+    fileBrowserOpen,
+    webcamStreaming: webcam.mode === 'stream',
+    webcamFullscreen,
+  };
+  const hotkeyActions: HotkeyActions = {
+    setHelpOpen,
+    setBedMeshOpen,
+    setWebcamOpen: toggleWebcamOpen,
+    setFileBrowserOpen,
+    toggleConsole,
+    refreshBedMesh,
+    webcamSnapshot,
+    webcamToggleStream,
+    toggleWebcamFullscreen,
+    toggleSensorVisibility,
+    quit,
+  };
+  ctxRef.current = { state: hotkeyState, actions: hotkeyActions };
+
+  useInput(
+    (input) => {
+      // ctxRef.current is set synchronously every render above — it's
+      // never null by the time the handler fires.
+      if (ctxRef.current !== null) {
+        dispatchHotkey(input, hotkeys, ctxRef.current);
+      }
+    },
+    [hotkeys],
   );
 
   // Stable callbacks for ConsolePanel — its `useInput` deps include these
@@ -170,117 +239,226 @@ export const App = ({ client, config }: AppProps) => {
     (s: string) => void sendCommand(s),
     [sendCommand],
   );
-  const handleCloseConsole = useCallback(() => setConsoleOpen(false), []);
   const handleToggleDebug = useCallback(() => setDebug((d) => !d), []);
 
   const host = `${config.client.API.connection.server}:${config.client.API.connection.port ?? 80}`;
 
-  const tableY = STATUSBAR_HEIGHT;
-  // The table block must fit the tallest of: sensor rows, print panel,
-  // system panel. Otherwise the chart would draw on top of a panel that
-  // extends further down than the sensor list.
-  const tableBlockHeight = Math.max(
-    sensorTableHeight(config.sensors),
-    PRINT_PANEL_HEIGHT,
-    SYSTEM_PANEL_HEIGHT,
-  );
-  const chartY = tableY + tableBlockHeight + TABLE_BOTTOM_GAP;
-  const availableForChartAndConsole =
-    height - chartY - (showErrorPanel ? ERROR_PANEL_HEIGHT : 0);
-  // Console takes the bottom ~quarter of the chart area; floor at 8 so it
-  // still fits header + a few entries + hint + input.
-  const consoleHeight = consoleOpen
-    ? Math.min(
-        Math.max(8, Math.floor(availableForChartAndConsole / 4)),
-        Math.max(8, availableForChartAndConsole - 8),
-      )
-    : 0;
-  const chartHeight = Math.max(8, availableForChartAndConsole - consoleHeight);
+  // ----- Two-column layout (Fluidd-style) --------------------------------
+  // Left column: PrintStatus (fixed) → SensorTable (fixed) → TempChart
+  //   (flex) → BedMesh (flex, when visible).
+  // Right column: Webcam (flex, when visible) → Console (flex, when visible).
+  // Error overlay sits at the bottom across both columns when Klipper
+  // signals an error.
+  //
+  // Visible flexible panels in each column share the remaining vertical
+  // space after fixed panels claim theirs — driven by `solveColumn`. Adding
+  // or removing a flex panel (via the toggle hotkeys) rescales the
+  // neighbors automatically.
+  const errorH = showErrorPanel ? ERROR_PANEL_HEIGHT : 0;
+  // SystemStats is a full-width strip directly under the columns and
+  // directly above the error overlay. The columns get whatever's left.
+  const systemH = SYSTEM_PANEL_HEIGHT;
+  const totalColumnH = Math.max(8, height - STATUSBAR_HEIGHT - systemH - errorH);
+  const splitRatio = config.layout.columnSplit;
+  const leftW = Math.max(20, Math.floor(width * splitRatio));
+  const rightW = Math.max(20, width - leftW);
+  const colStartY = STATUSBAR_HEIGHT;
+  const systemY = colStartY + totalColumnH;
+  const sensorH = sensorTableHeight(config.sensors);
 
-  // Header row layout is driven by config.layout.header. Each kind resolves
-  // to either a {x, width} block or `null` if it didn't fit.
-  const headerLayout = useMemo(
-    () => computeHeaderLayout(width, config.layout.header),
-    [width, config.layout.header],
-  );
-  const sensorSlot = findSlot(headerLayout, 'sensor-table');
-  const printSlot = findSlot(headerLayout, 'print-status');
-  const systemSlot = findSlot(headerLayout, 'system-stats');
+  // When the bed mesh is open we treat the heatmap as the column's
+  // priority claim — it needs enough vertical rows to render its full
+  // square grid (one terminal row per mesh-matrix row, which can be
+  // ~13 for a Lagrange-interpolated 5×5 probe). The chart yields
+  // entirely, collapsing to 1 row if necessary. When the mesh is
+  // closed the chart enforces its usual 10-row floor so it stays
+  // readable.
+  const CHART_MIN_DEFAULT = 10;
+  const CHART_MIN_WITH_MESH = 1;
+  const chartMin = bedMeshOpen ? CHART_MIN_WITH_MESH : CHART_MIN_DEFAULT;
+  const leftSpecs: PanelSpec[] = [
+    { id: 'print-status', fixedHeight: PRINT_PANEL_HEIGHT },
+    { id: 'sensors', fixedHeight: sensorH },
+    { id: 'chart', minHeight: chartMin },
+  ];
+  if (bedMeshOpen) {
+    // Cap `fixedHeight` at what the column can actually host without
+    // pushing past the system-stats strip below — the solver allocates
+    // positions strictly from cumulative heights, so an oversized
+    // `fixedHeight` produces a `y + height` that runs into systemY.
+    // With the reduced chart floor above, the cap typically equals the
+    // mesh's natural height, so the heatmap stays square.
+    const natural = computeBedMeshPanelHeight(bedMesh.data);
+    const available = Math.max(
+      1,
+      totalColumnH - PRINT_PANEL_HEIGHT - sensorH - chartMin,
+    );
+    leftSpecs.push({
+      id: 'bed-mesh',
+      fixedHeight: Math.min(natural, available),
+    });
+  }
+  const { positions: leftPos } = solveColumn(leftSpecs, totalColumnH);
+
+  const rightSpecs: PanelSpec[] = [];
+  if (webcamOpen) rightSpecs.push({ id: 'webcam', minHeight: 10 });
+  if (consoleOpen) rightSpecs.push({ id: 'console', minHeight: 9 });
+  const { positions: rightPos } = solveColumn(rightSpecs, totalColumnH);
+
+  // Helper: look up a panel's resolved geometry, returning a safe zero
+  // default for panels that weren't included this render (so the lookup
+  // doesn't crash if we accidentally try to read a hidden panel's pos).
+  const ZERO = { y: 0, height: 0 };
+  const ll = (id: string): { y: number; height: number } => leftPos.get(id) ?? ZERO;
+  const rl = (id: string): { y: number; height: number } => rightPos.get(id) ?? ZERO;
+
+  const chartGeom = ll('chart');
+  const bedMeshGeom = ll('bed-mesh');
+  const webcamGeom = rl('webcam');
+  const consoleGeom = rl('console');
+
+  // Fullscreen-webcam fast-path: the panel covers everything below the
+  // status bar. Distinct React `key`s for the inline vs. fullscreen
+  // variants force a full remount on toggle — the unmount cleanup
+  // blanks the old image cells before the new geometry paints, so
+  // we never leave a ghost rectangle behind.
+  const webcamFs = webcamFullscreen && webcamOpen;
 
   return (
     <>
       <StatusBar status={status} host={host} y={0} width={width} />
-      {sensorSlot && (
-        <SensorTable
-          configs={config.sensors}
-          sensors={sensors}
-          hidden={hidden}
-          y={tableY}
-          width={sensorSlot.x + sensorSlot.width}
-        />
-      )}
-      {printSlot && (
-        <PrintStatusPanel
-          status={printStatus}
-          y={tableY}
-          x={printSlot.x}
-          width={printSlot.width}
-        />
-      )}
-      {systemSlot && (
-        <SystemStatsPanel
-          procStats={procStats}
-          klipper={klipperStats}
-          y={tableY}
-          x={systemSlot.x}
-          width={systemSlot.width}
-        />
-      )}
-      {bedMeshOpen ? (
-        <BedMeshPanel
-          data={bedMesh.data}
-          error={bedMesh.error}
-          x={0}
-          y={chartY}
-          width={width}
-          height={chartHeight}
-        />
+
+      {webcamFs ? (
+        // Suppress while a modal is up — same reasoning as the inline
+        // variant. The unmount cleanup blanks the image cells so the
+        // modal repaints cleanly over them.
+        !helpOpen && !fileBrowserOpen && (
+          <WebcamPanel
+            key="webcam-fullscreen"
+            webcam={webcam}
+            x={0}
+            y={colStartY}
+            width={width}
+            height={Math.max(1, height - colStartY)}
+          />
+        )
       ) : (
-        <TemperatureChartPanel
-          sensors={sensors}
-          configs={config.sensors}
-          hidden={hidden}
-          renderer={config.charts.renderer}
-          width={width}
-          height={chartHeight}
-          x={0}
-          y={chartY}
+        <>
+          {/* --- Left column ----------------------------------------- */}
+          <PrintStatusPanel
+            status={printStatus}
+            // Suppress the inline thumbnail while the help modal is open —
+            // its re-emit-every-render layoutEffect would otherwise paint
+            // over the modal. Passing `null` causes PrintStatusPanel to
+            // skip mounting ThumbnailDisplay, and its unmount cleanup
+            // clears the image cells before the modal renders on top.
+            thumbnail={helpOpen || fileBrowserOpen ? null : thumbnail.buffer}
+            x={0}
+            y={colStartY + ll('print-status').y}
+            width={leftW}
+          />
+          <SensorTable
+            configs={config.sensors}
+            sensors={sensors}
+            hidden={hidden}
+            x={0}
+            y={colStartY + ll('sensors').y}
+            width={leftW}
+          />
+          <TemperatureChartPanel
+            sensors={sensors}
+            configs={config.sensors}
+            hidden={hidden}
+            renderer={config.charts.renderer}
+            x={0}
+            y={colStartY + chartGeom.y}
+            width={leftW}
+            height={chartGeom.height}
+          />
+          {bedMeshOpen && (
+            <BedMeshPanel
+              data={bedMesh.data}
+              error={bedMesh.error}
+              x={0}
+              y={colStartY + bedMeshGeom.y}
+              width={leftW}
+              height={bedMeshGeom.height}
+            />
+          )}
+
+          {/* --- Right column ---------------------------------------- */}
+          {/* Suppressed while the help modal is open — see thumbnail
+              comment above. Unmounting the panel triggers its
+              clearTerminalRect cleanup so the inline-image cells are
+              blanked before the modal repaints over them. */}
+          {webcamOpen && !helpOpen && !fileBrowserOpen && (
+            <WebcamPanel
+              key="webcam-inline"
+              webcam={webcam}
+              x={leftW}
+              y={colStartY + webcamGeom.y}
+              width={rightW}
+              height={webcamGeom.height}
+            />
+          )}
+          {consoleOpen && (
+            <ConsolePanel
+              entries={gcodeConsole.entries}
+              onSubmit={handleSubmitConsole}
+              naturalScroll={config.console.naturalScroll}
+              debug={debug}
+              onToggleDebug={handleToggleDebug}
+              onInputFocusChange={setConsoleInputFocused}
+              commands={gcodeHelp}
+              x={leftW}
+              y={colStartY + consoleGeom.y}
+              width={rightW}
+              height={consoleGeom.height}
+            />
+          )}
+
+          {/* --- System stats strip (full width, below both columns) - */}
+          <SystemStatsPanel
+            procStats={procStats}
+            klipper={klipperStats}
+            x={0}
+            y={systemY}
+            width={width}
+          />
+
+          {/* --- Bottom error overlay -------------------------------- */}
+          {showErrorPanel && (
+            <ErrorPanel
+              klippyState={printerErrors.klippyState}
+              stateMessage={printerErrors.stateMessage}
+              errors={printerErrors.errors}
+              fetchError={printerErrors.fetchError}
+              y={height - errorH}
+              width={width}
+            />
+          )}
+        </>
+      )}
+
+      {/* --- File browser modal (rendered on top of normal panels) ----- */}
+      {fileBrowserOpen && (
+        <FileBrowserModal
+          browser={fileBrowser}
+          client={client}
+          termWidth={width}
+          termHeight={height}
+          visibleColumns={config.fileBrowser.visibleColumns}
+          extensionsHint={config.fileBrowser.extensions}
+          showThumbnails={config.fileBrowser.showThumbnails}
+          thumbnailCellW={config.fileBrowser.thumbnailCellW}
+          thumbnailCellH={config.fileBrowser.thumbnailCellH}
+          onClose={() => setFileBrowserOpen(false)}
         />
       )}
-      {consoleOpen && (
-        <ConsolePanel
-          entries={gcodeConsole.entries}
-          onSubmit={handleSubmitConsole}
-          onClose={handleCloseConsole}
-          naturalScroll={config.console.naturalScroll}
-          debug={debug}
-          onToggleDebug={handleToggleDebug}
-          onInputFocusChange={setConsoleInputFocused}
-          commands={gcodeHelp}
-          y={chartY + chartHeight}
-          width={width}
-          height={consoleHeight}
-        />
-      )}
-      {showErrorPanel && (
-        <ErrorPanel
-          klippyState={printerErrors.klippyState}
-          stateMessage={printerErrors.stateMessage}
-          errors={printerErrors.errors}
-          fetchError={printerErrors.fetchError}
-          y={chartY + chartHeight + consoleHeight}
-          width={width}
-        />
+
+      {/* --- Help modal (rendered last so it draws on top of all panels) - */}
+      {helpOpen && (
+        <HelpModal termWidth={width} termHeight={height} hotkeys={hotkeys} />
       )}
     </>
   );

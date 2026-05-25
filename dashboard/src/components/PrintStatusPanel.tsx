@@ -1,5 +1,7 @@
 import { Text } from 'react-curse';
 
+import { PanelFrame } from './PanelFrame';
+import { ThumbnailDisplay } from './ThumbnailDisplay';
 import type { PrintStatus } from '../hooks/usePrintStatus';
 import { fmtDuration, truncate } from '../services/format';
 
@@ -21,9 +23,11 @@ import { fmtDuration, truncate } from '../services/format';
 /**
  * Number of vertical rows the panel always occupies — used by App.tsx to
  * reserve space below the panel for the temperature chart.
+ *
+ * Breakdown: top border (1) + 5 data rows + bottom border (1) = 7.
  * @source
  */
-export const PRINT_PANEL_HEIGHT = 6;
+export const PRINT_PANEL_HEIGHT = 7;
 
 /** Width (in chars) of the bold label column. */
 const LABEL_W = 9;
@@ -89,11 +93,32 @@ const basename = (path: string): string => {
 };
 
 /**
+ * Width (in cells) reserved on the right of the panel for the gcode
+ * thumbnail, when one is available. Sized to host a roughly-square
+ * preview (terminal cells are ~2:1, so 10 cells wide × 5 cells tall
+ * displays a square image). One extra cell of left-padding separates
+ * the thumbnail from the text column.
+ */
+const THUMBNAIL_W = 10;
+const THUMBNAIL_H = 5;
+const THUMBNAIL_PAD = 1;
+/** Total cells the thumbnail slot consumes from the inner content area. */
+const THUMBNAIL_SLOT = THUMBNAIL_W + THUMBNAIL_PAD;
+
+/**
  * Props for {@link PrintStatusPanel}.
  * @source
  */
 interface PrintStatusPanelProps {
   readonly status: PrintStatus;
+  /**
+   * PNG bytes from {@link useThumbnail} for the currently-loaded gcode.
+   * When non-null and the terminal supports inline images (iTerm2), the
+   * panel reserves {@link THUMBNAIL_SLOT} cells on the right and draws
+   * the thumbnail there. Text columns shrink to fit the remainder.
+   * `null` (no print loaded, or fetch failed) → text uses the full width.
+   */
+  readonly thumbnail?: Buffer | null;
   readonly y: number;
   readonly width: number;
   readonly x: number;
@@ -173,17 +198,8 @@ const TwoColRow = ({ y, x, width, labelL, valueL, labelR, valueR }: TwoColRowPro
 };
 
 /**
- * Bold + underlined "Print Status" label that spans the panel width.
- * @source
- */
-const HeaderRow = ({ x, y, width }: { x: number; y: number; width: number }) => (
-  <Text x={x} y={y} width={width} height={1} block bold underline>
-    <Text x={0}>{'Print Status'.padEnd(width)}</Text>
-  </Text>
-);
-
-/**
- * Render a 6-row print-job summary panel.
+ * Render a 7-row print-job summary panel (1 top border + 5 data rows + 1
+ * bottom border).
  *
  * When the printer is idle/standby/complete, the panel shrinks to a
  * "State: Idle / Last: <filename>" form. While printing or paused, the
@@ -194,20 +210,47 @@ const HeaderRow = ({ x, y, width }: { x: number; y: number; width: number }) => 
  * @returns The panel element.
  * @source
  */
-export const PrintStatusPanel = ({ status, y, width, x }: PrintStatusPanelProps) => {
+export const PrintStatusPanel = ({ status, thumbnail, y, width, x }: PrintStatusPanelProps) => {
   const file = status.filename ? basename(status.filename) : '—';
   const stateLabel = status.state === 'unknown' ? '—' : status.state;
   const isActive = status.state === 'printing' || status.state === 'paused';
+  // Content rows are inset by 1 column on each side so the side bars of
+  // PanelFrame (rendered last so its strokes win at the edge columns) sit
+  // in margin space the row's block-fill doesn't touch.
+  const innerX = x + 1;
+  const innerWFull = Math.max(1, width - 2);
+  // When a thumbnail is available AND the panel is wide enough to make
+  // room, shrink the text column to leave a slot on the right for the
+  // image. Falls back to full-width text otherwise so a tiny terminal
+  // still gets all the status info.
+  const hasThumbnail = thumbnail !== null && thumbnail !== undefined;
+  const showThumbnail = hasThumbnail && innerWFull > THUMBNAIL_SLOT + 20;
+  const innerW = showThumbnail ? innerWFull - THUMBNAIL_SLOT : innerWFull;
+  const thumbnailX = x + width - 1 - THUMBNAIL_W;
+  const thumbnailY = y + 1;
+  const frame = (
+    <PanelFrame x={x} y={y} width={width} height={PRINT_PANEL_HEIGHT} title="Print Status" />
+  );
+  const thumbEl = showThumbnail ? (
+    <ThumbnailDisplay
+      buffer={thumbnail}
+      x={thumbnailX}
+      y={thumbnailY}
+      width={THUMBNAIL_W}
+      height={THUMBNAIL_H}
+    />
+  ) : null;
 
   if (!isActive) {
     return (
       <>
-        <HeaderRow x={x} y={y} width={width} />
-        <OneColRow x={x} y={y + 1} width={width} label="State:" value={stateLabel === '—' ? 'Idle' : stateLabel} />
-        <OneColRow x={x} y={y + 2} width={width} label="Last:" value={file} />
-        <OneColRow x={x} y={y + 3} width={width} label="" value="" />
-        <OneColRow x={x} y={y + 4} width={width} label="" value="" />
-        <OneColRow x={x} y={y + 5} width={width} label="" value="" />
+        <OneColRow x={innerX} y={y + 1} width={innerW} label="State:" value={stateLabel === '—' ? 'Idle' : stateLabel} />
+        <OneColRow x={innerX} y={y + 2} width={innerW} label="Last:" value={file} />
+        <OneColRow x={innerX} y={y + 3} width={innerW} label="" value="" />
+        <OneColRow x={innerX} y={y + 4} width={innerW} label="" value="" />
+        <OneColRow x={innerX} y={y + 5} width={innerW} label="" value="" />
+        {thumbEl}
+        {frame}
       </>
     );
   }
@@ -227,28 +270,29 @@ export const PrintStatusPanel = ({ status, y, width, x }: PrintStatusPanelProps)
 
   return (
     <>
-      <HeaderRow x={x} y={y} width={width} />
-      <OneColRow x={x} y={y + 1} width={width} label="File:" value={file} />
+      <OneColRow x={innerX} y={y + 1} width={innerW} label="File:" value={file} />
       <TwoColRow
-        x={x}
+        x={innerX}
         y={y + 2}
-        width={width}
+        width={innerW}
         labelL="State:"
         valueL={stateLabel}
         labelR="Layer:"
         valueR={layer}
       />
       <TwoColRow
-        x={x}
+        x={innerX}
         y={y + 3}
-        width={width}
+        width={innerW}
         labelL="Progress:"
         valueL={pct}
         labelR="Filament:"
         valueR={filament}
       />
-      <OneColRow x={x} y={y + 4} width={width} label="Elapsed:" value={fmtDuration(status.elapsedSec)} />
-      <OneColRow x={x} y={y + 5} width={width} label="ETA:" value={fmtDuration(status.remainingSec)} />
+      <OneColRow x={innerX} y={y + 4} width={innerW} label="Elapsed:" value={fmtDuration(status.elapsedSec)} />
+      <OneColRow x={innerX} y={y + 5} width={innerW} label="ETA:" value={fmtDuration(status.remainingSec)} />
+      {thumbEl}
+      {frame}
     </>
   );
 };

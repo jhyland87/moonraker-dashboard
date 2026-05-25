@@ -49,6 +49,16 @@ const computeChangeRate = (samples: readonly TemperatureSample[]): number | unde
  * call (per connection), so all subscribers on this client must share one spec.
  * Sensor objects use the temperature attribute set; `webhooks` is included so
  * `usePrinterErrors` can react to Klipper state transitions.
+ *
+ * Adding `bed_mesh` here means `useBedMesh`'s `notify:status_update`
+ * listener receives live updates whenever Klipper reloads or recalibrates
+ * the mesh — no polling, no user action required. The subscription is
+ * read-only (it does NOT trigger calibration or any mesh-modifying
+ * command), so it's safe to include unconditionally even mid-print. We
+ * always include it (rather than gating on panel visibility) because
+ * Moonraker's `subscribe` *replaces* the previous spec atomically — every
+ * dynamic add/remove would re-roll the whole sensor subscription, which
+ * isn't worth the complexity for an object that updates this rarely.
  */
 const buildSubscriptionSpec = (
   configs: readonly SensorConfig[],
@@ -63,6 +73,14 @@ const buildSubscriptionSpec = (
   system_stats: ['sysload', 'cputime', 'memavail'],
   mcu: ['last_stats'],
   'mcu rpi': ['last_stats'],
+  bed_mesh: [
+    'profile_name',
+    'mesh_min',
+    'mesh_max',
+    'probed_matrix',
+    'mesh_matrix',
+    'profiles',
+  ],
 });
 
 type SensorPartial = Partial<{

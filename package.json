@@ -9,5 +9,10 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck"
   },
-  "packageManager": "pnpm@10.11.0"
+  "packageManager": "pnpm@10.11.0",
+  "dependencies": {
+    "dashboard": "^0.0.1",
+    "supports-terminal-graphics": "^0.1.0",
+    "terminal-image": "^4.3.0"
+  }
 }

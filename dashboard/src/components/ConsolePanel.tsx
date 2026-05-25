@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Text, useInput, useMouse } from 'react-curse';
 
+import { PanelFrame } from './PanelFrame';
 import type { GcodeEntry } from '../hooks/useGcodeConsole';
 import type { GcodeHelp } from '../hooks/useGcodeHelp';
 
 interface ConsolePanelProps {
   readonly entries: readonly GcodeEntry[];
   readonly onSubmit: (script: string) => void;
-  readonly onClose: () => void;
   /** See ConsoleConfig.naturalScroll. */
   readonly naturalScroll: boolean;
   readonly debug: boolean;
@@ -25,6 +25,7 @@ interface ConsolePanelProps {
    * `printer.gcode.help` reply lands; autocomplete just stays inert.
    */
   readonly commands?: GcodeHelp;
+  readonly x: number;
   readonly y: number;
   readonly width: number;
   readonly height: number;
@@ -60,12 +61,12 @@ const truncate = (s: string, max: number): string =>
 export const ConsolePanel = ({
   entries,
   onSubmit,
-  onClose,
   naturalScroll,
   debug,
   onToggleDebug,
   onInputFocusChange,
   commands,
+  x,
   y,
   width,
   height,
@@ -130,11 +131,15 @@ export const ConsolePanel = ({
     // Enter: \r ; Backspace/Delete: 0x7f or 0x08 ; Esc: 0x1b ; arrows: CSI codes.
 
     if (!inputFocused) {
-      // View mode — passive feed. Keystrokes drive navigation, never the input.
-      if (input === 'q' || input === 'Q' || input === 'c' || input === 'C' || input === '\x1b') {
-        onClose();
-        return;
-      }
+      // View mode — the console is a passive feed alongside every other
+      // panel. Keystrokes here are NOT modal: `q`, `c`, sensor letters,
+      // panel toggles, etc. all fall through to App.tsx's dispatcher so
+      // the user doesn't need to close the console to use them.
+      //
+      // The only keys this branch claims are the genuinely
+      // console-internal ones — focus the input, toggle debug, scroll
+      // the feed — and even those are scoped to keys that don't conflict
+      // with App.tsx's known hotkey set.
       if (input === 'i' || input === 'I') {
         setInputFocused(true);
         return;
@@ -253,7 +258,6 @@ export const ConsolePanel = ({
     historyIdx,
     sentHistory,
     entries.length,
-    onClose,
     onSubmit,
     onToggleDebug,
     matches,
@@ -274,13 +278,17 @@ export const ConsolePanel = ({
     return () => onInputFocusChange?.(false);
   }, [inputFocused, onInputFocusChange]);
 
-  const headerH = 1;
+  // Layout: top border (1) + chip header (1) + body + (hint?) + suggestions
+  // + input (1) + bottom border (1).
+  const headerH = 2;
   const suggestionsH = matches.length; // 0 when none — collapses cleanly.
   // Hint row is suppressed while the suggestion list is visible (its keys are
   // the autocomplete keys — showing both is redundant and steals a body row).
   const showHint = suggestionsH === 0;
-  const footerH = (showHint ? 1 : 0) + suggestionsH + 1; // hint? + suggestions + input
+  const footerH = (showHint ? 1 : 0) + suggestionsH + 1 + 1; // hint? + sug + input + bottom border
   const bodyH = Math.max(1, height - headerH - footerH);
+  const innerX = x + 1;
+  const innerW = Math.max(1, width - 2);
 
   // When new entries arrive while scrolled back, advance the offset so the
   // user's view stays put on the *same* entries instead of drifting downward.
@@ -322,14 +330,20 @@ export const ConsolePanel = ({
   const padRows = Math.max(0, bodyH - visible.length);
   const paused = scrollOffset > 0;
 
-  // Body column widths.
+  // Body column widths — sized against the inner (border-inset) width.
   const TIME_W = 8;
   const PREFIX_W = 3; // "// " or ">> "
-  const msgW = Math.max(8, width - 2 - TIME_W - 1 - PREFIX_W);
+  const msgW = Math.max(8, innerW - 2 - TIME_W - 1 - PREFIX_W);
+
+  // Body rows start one row in from the top border + chip header.
+  const bodyStartY = y + headerH;
+  // Input lives one row above the bottom border.
+  const inputY = y + height - 2;
 
   return (
     <>
-      <Text x={0} y={y} width={width} height={1} background="BrightBlack" block>
+      {/* Chip header row (status indicators) — sits inside the border at y+1. */}
+      <Text x={innerX} y={y + 1} width={innerW} height={1} background="BrightBlack" block>
         <Text x={1} color="White" bold>
           Console
         </Text>
@@ -349,12 +363,12 @@ export const ConsolePanel = ({
       </Text>
 
       {Array.from({ length: padRows }).map((_, i) => (
-        <Text key={`pad${i}`} x={0} y={y + headerH + i} width={width} height={1} block>
+        <Text key={`pad${i}`} x={innerX} y={bodyStartY + i} width={innerW} height={1} block>
           <Text> </Text>
         </Text>
       ))}
       {visible.map((entry, i) => {
-        const row = y + headerH + padRows + i;
+        const row = bodyStartY + padRows + i;
         const time = formatTime(entry.time);
         let prefix: string;
         let prefixColor: string;
@@ -388,7 +402,7 @@ export const ConsolePanel = ({
             break;
         }
         return (
-          <Text key={`e${row}-${i}`} x={0} y={row} width={width} height={1} block>
+          <Text key={`e${row}-${i}`} x={innerX} y={row} width={innerW} height={1} block>
             <Text x={1} color="BrightBlack">{time}</Text>
             <Text x={1 + TIME_W + 1} color={prefixColor}>
               {prefix}
@@ -401,11 +415,11 @@ export const ConsolePanel = ({
       })}
 
       {showHint && (
-        <Text x={0} y={y + height - footerH} width={width} height={1} block>
+        <Text x={innerX} y={y + height - footerH} width={innerW} height={1} block>
           <Text x={1} color="BrightBlack" dim>
             {inputFocused
               ? 'Enter to send · ↑/↓ history · Tab autocomplete · Esc to stop typing'
-              : 'i to type · q/c/Esc to close · d to toggle debug · ↑/↓ scroll'}
+              : 'i to type · d to toggle debug · ↑/↓ scroll · (other hotkeys active)'}
           </Text>
         </Text>
       )}
@@ -414,13 +428,13 @@ export const ConsolePanel = ({
           (suggestionIdx) is the one Enter sends and Tab fills into the
           input; arrows move the highlight. */}
       {matches.map((cmd, i) => {
-        const row = y + height - 1 - suggestionsH + i;
+        const row = inputY - suggestionsH + i;
         const isActive = i === suggestionIdx;
         const nameW = Math.min(28, Math.max(...matches.map((m) => m.length), 1));
         const description = commands?.[cmd] ?? '';
-        const descW = Math.max(1, width - 3 - nameW - 2);
+        const descW = Math.max(1, innerW - 3 - nameW - 2);
         return (
-          <Text key={`sug${row}-${i}`} x={0} y={row} width={width} height={1} block>
+          <Text key={`sug${row}-${i}`} x={innerX} y={row} width={innerW} height={1} block>
             <Text x={1} color={isActive ? 'Yellow' : 'BrightBlack'} bold={isActive}>
               {isActive ? '▶' : ' '}
             </Text>
@@ -438,16 +452,16 @@ export const ConsolePanel = ({
           </Text>
         );
       })}
-      <Text x={0} y={y + height - 1} width={width} height={1} block>
+      <Text x={innerX} y={inputY} width={innerW} height={1} block>
         <Text x={1} color={inputFocused ? 'Yellow' : 'BrightBlack'} bold dim={!inputFocused}>
           {'> '}
         </Text>
         {inputFocused ? (
           <>
             <Text x={3} color="White">
-              {truncate(draft, Math.max(1, width - 5))}
+              {truncate(draft, Math.max(1, innerW - 5))}
             </Text>
-            <Text x={3 + Math.min(draft.length, width - 5)} background="White" color="Black">
+            <Text x={3 + Math.min(draft.length, innerW - 5)} background="White" color="Black">
               {' '}
             </Text>
           </>
@@ -457,6 +471,9 @@ export const ConsolePanel = ({
           </Text>
         )}
       </Text>
+      {/* Border drawn last so its side bars overwrite the block-fill edge
+          columns of the content rows above. */}
+      <PanelFrame x={x} y={y} width={width} height={height} />
     </>
   );
 };

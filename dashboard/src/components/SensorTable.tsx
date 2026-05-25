@@ -1,5 +1,6 @@
 import { Text } from 'react-curse';
 
+import { PanelFrame } from './PanelFrame';
 import type { SensorConfig, SensorState } from '../types/index';
 
 /**
@@ -20,14 +21,17 @@ const ACTUAL_END = CHANGE_END + COL_GAP + ACTUAL_W;
 const TARGET_END = ACTUAL_END + COL_GAP + TARGET_W;
 
 /** Total visible width of one row (matches bash's `table_max_visible = 57`). */
-export const SENSOR_TABLE_WIDTH = TARGET_END;
+export const SENSOR_TABLE_WIDTH = TARGET_END + 2; // +2 for left/right border
 export const SENSOR_TABLE_HEADER_ROWS = 1;
+/** Border rows the frame adds (top + bottom). */
+export const SENSOR_TABLE_BORDER_ROWS = 2;
 
 interface SensorTableProps {
   readonly configs: readonly SensorConfig[];
   readonly sensors: Readonly<Record<string, SensorState>>;
   /** Toggle keys (case-sensitive, as declared in config) currently hidden. */
   readonly hidden: ReadonlySet<string>;
+  readonly x: number;
   readonly y: number;
   readonly width: number;
 }
@@ -89,11 +93,12 @@ const NameCell = ({ label, hotkey, color }: NamePartsProps) => {
 interface RowProps {
   readonly state: SensorState;
   readonly hidden: boolean;
+  readonly x: number;
   readonly y: number;
   readonly width: number;
 }
 
-const SensorRow = ({ state, hidden, y, width }: RowProps) => {
+const SensorRow = ({ state, hidden, x, y, width }: RowProps) => {
   const power = formatPower(state).padStart(POWER_W);
   const change = formatChange(state).padStart(CHANGE_W);
   const actual = formatActual(state).padStart(ACTUAL_W);
@@ -104,7 +109,7 @@ const SensorRow = ({ state, hidden, y, width }: RowProps) => {
   const nameColor = hidden ? undefined : state.config.color;
   const valueColor = hidden ? undefined : 'White';
   return (
-    <Text x={0} y={y} width={width} height={1} block dim={hidden}>
+    <Text x={x} y={y} width={width} height={1} block dim={hidden}>
       <NameCell label={state.config.label} hotkey={state.config.toggleKey} color={nameColor} />
       <Text x={POWER_END - POWER_W} color={valueColor}>{power}</Text>
       <Text x={CHANGE_END - CHANGE_W} color={valueColor}>{change}</Text>
@@ -114,8 +119,8 @@ const SensorRow = ({ state, hidden, y, width }: RowProps) => {
   );
 };
 
-const HeaderRow = ({ y, width }: { readonly y: number; readonly width: number }) => (
-  <Text x={0} y={y} width={width} height={1} block bold underline>
+const HeaderRow = ({ x, y, width }: { readonly x: number; readonly y: number; readonly width: number }) => (
+  <Text x={x} y={y} width={width} height={1} block bold underline>
     <Text x={NAME_X}>Name</Text>
     <Text x={POWER_END - POWER_W}>{'Power'.padStart(POWER_W)}</Text>
     <Text x={CHANGE_END - CHANGE_W}>{'Change'.padStart(CHANGE_W)}</Text>
@@ -125,12 +130,13 @@ const HeaderRow = ({ y, width }: { readonly y: number; readonly width: number })
 );
 
 export const sensorTableHeight = (configs: readonly SensorConfig[]): number =>
-  SENSOR_TABLE_HEADER_ROWS + configs.length;
+  SENSOR_TABLE_HEADER_ROWS + configs.length + SENSOR_TABLE_BORDER_ROWS;
 
-export const SensorTable = ({ configs, sensors, hidden, y, width }: SensorTableProps) => {
+export const SensorTable = ({ configs, sensors, hidden, x, y, width }: SensorTableProps) => {
+  const totalH = sensorTableHeight(configs);
   return (
     <>
-      <HeaderRow y={y} width={width} />
+      <HeaderRow x={x} y={y + 1} width={width} />
       {configs.map((cfg, idx) => {
         const state =
           sensors[cfg.objectName] ??
@@ -140,11 +146,15 @@ export const SensorTable = ({ configs, sensors, hidden, y, width }: SensorTableP
             key={cfg.objectName}
             state={state}
             hidden={hidden.has(cfg.toggleKey)}
-            y={y + SENSOR_TABLE_HEADER_ROWS + idx}
+            x={x}
+            y={y + 1 + SENSOR_TABLE_HEADER_ROWS + idx}
             width={width}
           />
         );
       })}
+      {/* Border rendered LAST so its side bars overwrite the space-fill from
+          the block-style content rows above. */}
+      <PanelFrame x={x} y={y} width={width} height={totalH} title="Sensors" />
     </>
   );
 };

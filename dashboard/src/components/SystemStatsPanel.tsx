@@ -1,5 +1,6 @@
 import { Text } from 'react-curse';
 
+import { PanelFrame } from './PanelFrame';
 import type { KlipperStats } from '../hooks/useKlipperStats';
 import type { MachineProcStats, TimedSample } from '../hooks/useMachineProcStats';
 import {
@@ -11,73 +12,41 @@ import {
 } from '../services/format';
 
 /**
- * System resource panel modeled after Fluidd's "System Utilization" card.
+ * Compact system-resource panel. Renders as a 5-row strip across the
+ * bottom of the dashboard:
  *
- * Klipper Load and System Memory get the larger 2-row chip+bars treatment
- * (these are the metrics you actually want to glance at). Everything else
- * gets a 1-row mini chart in the same chip+sparkline style. All charts
- * auto-scale to the highest observed value in their visible window so the
- * shape of the series is readable regardless of absolute magnitude (e.g.
- * MCU Load might sit at 1%, RPI Load near 200% — both render correctly).
+ * ```
+ * ┌─ System ─────────────────────────────────── ⚠ throttled: <flags> ─┐
+ * │[Klipper 5.8%]▆▅▆█  [SysLd 2.5]▂▃▄  [MCU 2.00%]▁▂  [RPI 3.6%]▆▇▆▅   │
+ * │[Mem 99/209MB]▄▄▄▄  [MR 27.4%]▂▂▃   [MCU Aw 0.3%]▁ [RPI Aw 0.0%]▁    │
+ * │ Temp 45 °C        wlan0 2.3 MB/s    Up 3d 3h       Conns 20       │
+ * └────────────────────────────────────────────────────────────────────┘
+ * ```
  *
- * Layout:
- *   ┌─ System ───────────────────────────────────┐
- *   │[ Klipper 62.9% ] ▆▅▆▅▇▆▅█▆▆▆▆▅▆▆█          │  ← 2-row chart
- *   │[                ] ▆▅▆▅▇▆▅█▆▆▆▆▅▆▆█          │
- *   │[ Mem 99 MB / 209 MB (47%) ] ▄▄▄▄▄▄          │  ← 2-row chart
- *   │[                          ] ▄▄▄▄▄▄          │
- *   │[ SysLd 2.16/2 ] ▂▃▃▄▄▄▃▂                    │  ← mini charts
- *   │[ MR 6.99% ] ▂▂▃▂▂▃▂▂                        │
- *   │[ MCU 1.92% ] ▁▂▁▁▂▁▂                        │
- *   │[ MCU Aw 0.12% ] ▁▁▂▁▁                       │
- *   │[ RPI 209% ] ▆▇▆▅▄▅▆▇                        │
- *   │[ RPI Aw 0.44% ] ▁▁▁▂▁                       │
- *   │ Temp 45 °C  wlan0 2.5 MB/s  Up 7h  Conns 2 │
- *   │ <throttled warning row if any>              │
- *   └────────────────────────────────────────────┘
+ * Eight metric chips arranged in a 2×4 grid, plus a 4-column info row.
+ * The throttled warning surfaces in the top border's right slot only when
+ * the machine actually reports throttling — costs no rows in the steady
+ * state. Total height is fixed at {@link SYSTEM_PANEL_HEIGHT}.
  */
 
-const HEADER_ROWS = 1;
-const BIG_ROWS = 2; // 2-row chart
-const MINI_METRICS = 6; // SysLd, MR, MCU, MCU Aw, RPI, RPI Aw
-const INFO_ROWS = 2; // info line + throttled
+const HEADER_ROWS = 1; // top border row
+const CHART_ROWS = 2; // two rows of 4 mini chips each
+const INFO_ROWS = 1; // one info row split into 4 cells
+const FOOTER_ROWS = 1; // bottom border row
 
-export const SYSTEM_PANEL_HEIGHT =
-  HEADER_ROWS + BIG_ROWS * 2 + MINI_METRICS + INFO_ROWS; // 13
-
-const PANEL_MIN = 40;
-const PANEL_MAX = 60;
-const PANEL_GAP = 2;
-
-export const SYSTEM_PANEL_GAP = PANEL_GAP;
-
-export interface PanelGeometry {
-  readonly width: number;
-  readonly x: number;
-}
-
-export const computeSystemPanelGeometry = (
-  termWidth: number,
-  leftEdge: number,
-): PanelGeometry | null => {
-  let width = termWidth - leftEdge;
-  if (width > PANEL_MAX) width = PANEL_MAX;
-  if (width < PANEL_MIN) return null;
-  return { width, x: termWidth - width };
-};
+/**
+ * Fixed row count for the bottom system-stats strip. App layout reserves
+ * exactly this many rows below the columns.
+ * @source
+ */
+export const SYSTEM_PANEL_HEIGHT = HEADER_ROWS + CHART_ROWS + INFO_ROWS + FOOTER_ROWS;
 
 // 0..8 levels of vertical fill within a single character row.
 const BLOCKS = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'] as const;
 
 /**
  * Pick a block character by fill level `0..8`. Out-of-range levels
- * (which the caller shouldn't pass) clamp into the same range and fall
- * back to a space. Pulling this out of the inline tight loops removes
- * the indexed-access `| undefined` ambiguity without leaning on `!`.
- *
- * @param level - Desired fill level, clamped to `[0, BLOCKS.length - 1]`.
- * @returns A single block character (one terminal cell wide).
- * @source
+ * clamp into the same range; missing index defaults to a space.
  */
 const blockChar = (level: number): string => {
   const clamped = Math.min(BLOCKS.length - 1, Math.max(0, level));
@@ -85,41 +54,20 @@ const blockChar = (level: number): string => {
 };
 
 /**
- * Normalize raw values to `[0..1]` against a fixed `domainMax`. Using a fixed
- * domain (rather than auto-scaling to observed max) means bars accurately
- * reflect "how loaded is this in absolute terms" — a series sitting around
- * 5% renders as short bars, not as full-height bars. Values that exceed the
- * domain are clamped to 1.
+ * Normalize raw values to `[0..1]` against a fixed `domainMax`. Values
+ * beyond the domain clamp to 1 — so a CPU sitting around 5% renders as
+ * short bars, not full-height bars, even if the series briefly spikes.
  */
 const normalize = (values: readonly number[], domainMax: number): number[] => {
   if (domainMax <= 0) return values.map(() => 0);
   return values.map((v) => Math.max(0, Math.min(1, v / domainMax)));
 };
 
-const twoRowBars = (
-  rawValues: readonly number[],
-  width: number,
-  domainMax: number,
-): { top: string; bottom: string } => {
-  if (width <= 0) return { top: '', bottom: '' };
-  const slice = rawValues.length >= width ? rawValues.slice(rawValues.length - width) : rawValues;
-  const values = normalize(slice, domainMax);
-  const pad = width - slice.length;
-  const padTop = ' '.repeat(pad);
-  const padBottom = ' '.repeat(pad);
-  const topChars: string[] = [];
-  const bottomChars: string[] = [];
-  for (const v of values) {
-    const total = Math.round(v * 16);
-    const bottomFill = Math.min(8, total);
-    const topFill = Math.max(0, total - 8);
-    bottomChars.push(blockChar(bottomFill));
-    topChars.push(blockChar(topFill));
-  }
-  return { top: padTop + topChars.join(''), bottom: padBottom + bottomChars.join('') };
-};
-
-/** Single-row sparkline using the same block elements (8 levels per column). */
+/**
+ * Single-row sparkline using 8-level block elements (one cell per sample).
+ * Pads the left side with spaces when there are fewer samples than width
+ * so new lines grow rightward into view.
+ */
 const oneRowBars = (
   rawValues: readonly number[],
   width: number,
@@ -133,14 +81,9 @@ const oneRowBars = (
 };
 
 /**
- * Pick the network interface most likely to be "the" main connection —
- * the non-loopback interface with the highest current bandwidth. When
- * everything is quiet, the highest cumulative rx/tx interface still wins.
- *
- * @param network - Network stats keyed by interface name.
- * @returns The chosen interface name + bandwidth, or `null` if nothing
- *          non-loopback exists.
- * @source
+ * Pick the network interface most likely to be "the" main connection — the
+ * non-loopback interface with the highest current bandwidth. When everything
+ * is quiet, the highest cumulative rx/tx interface still wins.
  */
 const pickNetwork = (
   network: MachineProcStats['network'],
@@ -158,95 +101,41 @@ const pickNetwork = (
 interface SystemStatsPanelProps {
   readonly procStats: MachineProcStats;
   readonly klipper: KlipperStats;
-  readonly y: number;
   readonly x: number;
+  readonly y: number;
   readonly width: number;
 }
 
-interface ChartBlockProps {
-  readonly y: number;
+interface MiniChipProps {
   readonly x: number;
+  readonly y: number;
   readonly width: number;
   readonly label: string;
   readonly value: string;
   readonly samples: readonly TimedSample[];
   readonly color: string;
-  /** Upper bound of the metric; values normalize as `v / domainMax`, clamped to [0,1]. */
-  readonly domainMax: number;
-}
-
-const computeChip = (
-  labelText: string,
-  width: number,
-  maxFraction: number,
-): { chipW: number; chip: string } => {
-  const chipMax = Math.max(6, Math.floor(width * maxFraction));
-  const chipW = Math.min(labelText.length, chipMax);
-  return { chipW, chip: truncate(labelText, chipW).padEnd(chipW) };
-};
-
-const ChartBlock = ({ y, x, width, label, value, samples, color, domainMax }: ChartBlockProps) => {
-  const labelText = ` ${label} ${value} `;
-  const { chipW, chip } = computeChip(labelText, width, 0.6);
-  const chartX = x + 1 + chipW + 1;
-  const chartW = Math.max(0, x + width - chartX - 1);
-  const { top, bottom } = twoRowBars(samples.map((s) => s.value), chartW, domainMax);
-
-  return (
-    <>
-      <Text x={x} y={y} width={width} height={1} block>
-        <Text x={1} background={color} color="Black" bold>
-          {chip}
-        </Text>
-        {chartW > 0 && (
-          <Text x={1 + chipW + 1} color={color}>
-            {top}
-          </Text>
-        )}
-      </Text>
-      <Text x={x} y={y + 1} width={width} height={1} block>
-        <Text x={1} background={color}>
-          {' '.repeat(chipW)}
-        </Text>
-        {chartW > 0 && (
-          <Text x={1 + chipW + 1} color={color}>
-            {bottom}
-          </Text>
-        )}
-      </Text>
-    </>
-  );
-};
-
-interface MiniChartProps {
-  readonly y: number;
-  readonly x: number;
-  readonly width: number;
-  readonly label: string;
-  readonly value: string;
-  readonly samples: readonly TimedSample[];
-  readonly color: string;
-  /** Upper bound of the metric; values normalize as `v / domainMax`, clamped to [0,1]. */
   readonly domainMax: number;
 }
 
 /**
- * 1-row variant of `ChartBlock` — same chip + sparkline visual but compressed
- * to a single character row. Used for secondary metrics so the panel can
- * show all 8 Fluidd-style stats without becoming taller than the chart below.
+ * One cell of the 2×4 grid — a colored chip with `LABEL VALUE` plus a
+ * sparkline that fills the rest of the cell. The chip occupies up to half
+ * of the cell width so the bars stay readable even on narrow columns.
  */
-const MiniChart = ({ y, x, width, label, value, samples, color, domainMax }: MiniChartProps) => {
+const MiniChip = ({ x, y, width, label, value, samples, color, domainMax }: MiniChipProps) => {
   const labelText = ` ${label} ${value} `;
-  const { chipW, chip } = computeChip(labelText, width, 0.45);
-  const chartW = Math.max(0, width - 2 - chipW - 1);
+  const chipMax = Math.max(6, Math.floor(width * 0.55));
+  const chipW = Math.min(labelText.length, chipMax);
+  const chip = truncate(labelText, chipW).padEnd(chipW);
+  const chartW = Math.max(0, width - chipW - 1);
   const spark = oneRowBars(samples.map((s) => s.value), chartW, domainMax);
   return (
     <Text x={x} y={y} width={width} height={1} block>
-      <Text x={1} background={color} color="Black" bold>
+      <Text x={0} background={color} color="Black" bold>
         {chip}
       </Text>
       {chartW > 0 && (
-        <Text x={1 + chipW + 1} color={color}>
+        <Text x={chipW + 1} color={color}>
           {spark}
         </Text>
       )}
@@ -254,29 +143,75 @@ const MiniChart = ({ y, x, width, label, value, samples, color, domainMax }: Min
   );
 };
 
-const HeaderRow = ({ x, y, width }: { x: number; y: number; width: number }) => (
-  <Text x={x} y={y} width={width} height={1} block bold underline>
-    <Text x={0}>{'System'.padEnd(width)}</Text>
+/**
+ * Single info-row column — plain colored label, no chart. Used for the
+ * non-time-series metrics that don't have a meaningful sparkline (temp,
+ * network bandwidth, uptime, websocket connection count).
+ */
+const InfoCell = ({
+  x,
+  y,
+  width,
+  text,
+}: {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly text: string;
+}) => (
+  <Text x={x} y={y} width={width} height={1} block>
+    <Text x={0} color="White">
+      {truncate(text, Math.max(1, width - 1))}
+    </Text>
   </Text>
 );
 
-export const SystemStatsPanel = ({ procStats, klipper, y, x, width }: SystemStatsPanelProps) => {
-  // Klipper Load chart (primary CPU consumer on a printer).
+/**
+ * Render the system-stats strip. Always rendered at fixed height
+ * {@link SYSTEM_PANEL_HEIGHT}; aligns content into a 4-column grid so the
+ * panel stays low-profile regardless of terminal width.
+ *
+ * @param props - See {@link SystemStatsPanelProps}.
+ * @returns The panel element.
+ *
+ * @source
+ */
+export const SystemStatsPanel = ({
+  procStats,
+  klipper,
+  x,
+  y,
+  width,
+}: SystemStatsPanelProps) => {
+  const innerX = x + 1;
+  const innerY = y + 1;
+  const innerW = Math.max(1, width - 2);
+
+  // 4 equal columns. The gap (1 char) is built into MiniChip's `width`
+  // claim — each chip writes a block of `colW - 1` chars, leaving one
+  // breathing-room space between neighbors.
+  const colW = Math.max(8, Math.floor(innerW / 4));
+  const colX = (i: number): number => innerX + i * colW;
+
+  // ----- Values ---------------------------------------------------------
   const klipperValue = fmtPct(klipper.klipperLoad, 1);
 
-  // Memory chart — system_memory used/total.
+  // Memory: shortened from "99 MB / 209 MB (47%)" to "99/209MB 47%" so it
+  // fits a single column. mfmtMemory("99 MB") → "99 MB"; strip the spaces
+  // and unit on the first half.
   let memValue = '—';
   if (procStats.memUsedKb !== undefined && procStats.memTotalKb && procStats.memTotalKb > 0) {
     const memPct = (procStats.memUsedKb / procStats.memTotalKb) * 100;
-    memValue = `${fmtMemory(procStats.memUsedKb)} / ${fmtMemory(procStats.memTotalKb)} (${memPct.toFixed(0)}%)`;
+    const used = fmtMemory(procStats.memUsedKb).replace(/\s+/g, '');
+    const total = fmtMemory(procStats.memTotalKb).replace(/\s+/g, '');
+    memValue = `${used}/${total} ${memPct.toFixed(0)}%`;
   } else if (procStats.memUsedKb !== undefined) {
     memValue = fmtMemory(procStats.memUsedKb);
   }
 
-  // Compact stat rows.
   const sysLoadValue =
     klipper.sysload !== undefined
-      ? `${klipper.sysload.toFixed(2)}${klipper.cpuCores ? ` / ${klipper.cpuCores}` : ''}`
+      ? `${klipper.sysload.toFixed(2)}${klipper.cpuCores ? `/${klipper.cpuCores}` : ''}`
       : '—';
   const moonrakerValue = fmtPct(procStats.cpuPct, 1);
   const mcuLoad = fmtPct(klipper.mainMcu.load, 2);
@@ -285,128 +220,86 @@ export const SystemStatsPanel = ({ procStats, klipper, y, x, width }: SystemStat
   const rpiAwake = fmtPct(klipper.rpiMcu.awakePct, 2);
 
   // Info row.
-  const temp = procStats.cpuTemp !== undefined ? `${procStats.cpuTemp.toFixed(1)} °C` : '—';
+  const temp = procStats.cpuTemp !== undefined ? `${procStats.cpuTemp.toFixed(1)}°C` : '—';
   const net = pickNetwork(procStats.network);
   const uptime = fmtUptime(procStats.systemUptimeSec);
   const conns =
     procStats.websocketConnections !== undefined ? String(procStats.websocketConnections) : '—';
-  const infoSegments = [
-    `Temp ${temp}`,
-    net ? `${net.name} ${fmtBandwidth(net.bandwidth)}` : null,
-    `Up ${uptime}`,
-    `Conns ${conns}`,
-  ].filter((s): s is string => s !== null);
-  const infoLine = infoSegments.join('  ');
 
   const throttled = procStats.throttledFlags.length > 0;
+  const throttledLabel = throttled
+    ? `⚠ throttled: ${procStats.throttledFlags.join(', ')}`
+    : undefined;
 
-  const klipperY = y + HEADER_ROWS;
-  const memY = klipperY + BIG_ROWS;
-  const miniY = memY + BIG_ROWS;
-  const infoY = miniY + MINI_METRICS;
-  const throttledY = infoY + 1;
+  // ----- Render ---------------------------------------------------------
+  // Chart row 1 (top): Klipper / SysLd / MCU / RPI
+  // Chart row 2:        Mem / MR / MCU Aw / RPI Aw
+  // Info row:           Temp / Network / Uptime / Conns
+  const chartW = colW - 1; // 1 char gap before the next column
 
   return (
     <>
-      <HeaderRow x={x} y={y} width={width} />
-      <ChartBlock
-        x={x}
-        y={klipperY}
-        width={width}
-        label="Klipper"
-        value={klipperValue}
-        samples={klipper.klipperLoadSamples}
-        color="Cyan"
-        domainMax={100}
+      <MiniChip
+        x={colX(0)} y={innerY} width={chartW}
+        label="Klipper" value={klipperValue}
+        samples={klipper.klipperLoadSamples} color="Cyan" domainMax={100}
       />
-      <ChartBlock
-        x={x}
-        y={memY}
-        width={width}
-        label="Mem"
-        value={memValue}
-        samples={procStats.memSamples}
-        color="Magenta"
-        domainMax={100}
-      />
-      <MiniChart
-        x={x}
-        y={miniY}
-        width={width}
-        label="SysLd"
-        value={sysLoadValue}
-        samples={klipper.sysloadSamples}
-        color="Yellow"
+      <MiniChip
+        x={colX(1)} y={innerY} width={chartW}
+        label="SysLd" value={sysLoadValue}
+        samples={klipper.sysloadSamples} color="Yellow"
         domainMax={Math.max(2, (klipper.cpuCores ?? 2) * 2)}
       />
-      <MiniChart
-        x={x}
-        y={miniY + 1}
-        width={width}
-        label="MR"
-        value={moonrakerValue}
-        samples={procStats.cpuSamples}
-        color="Blue"
-        domainMax={100}
+      <MiniChip
+        x={colX(2)} y={innerY} width={chartW}
+        label="MCU" value={mcuLoad}
+        samples={klipper.mainMcu.loadSamples} color="Green" domainMax={50}
       />
-      <MiniChart
-        x={x}
-        y={miniY + 2}
-        width={width}
-        label="MCU"
-        value={mcuLoad}
-        samples={klipper.mainMcu.loadSamples}
-        color="Green"
-        domainMax={50}
+      <MiniChip
+        x={colX(3)} y={innerY} width={chartW}
+        label="RPI" value={rpiLoad}
+        samples={klipper.rpiMcu.loadSamples} color="BrightMagenta" domainMax={1000}
       />
-      <MiniChart
-        x={x}
-        y={miniY + 3}
-        width={width}
-        label="MCU Aw"
-        value={mcuAwake}
-        samples={klipper.mainMcu.awakeSamples}
-        color="Green"
-        domainMax={100}
+
+      <MiniChip
+        x={colX(0)} y={innerY + 1} width={chartW}
+        label="Mem" value={memValue}
+        samples={procStats.memSamples} color="Magenta" domainMax={100}
       />
-      <MiniChart
-        x={x}
-        y={miniY + 4}
-        width={width}
-        label="RPI"
-        value={rpiLoad}
-        samples={klipper.rpiMcu.loadSamples}
-        color="BrightMagenta"
-        domainMax={1000}
+      <MiniChip
+        x={colX(1)} y={innerY + 1} width={chartW}
+        label="MR" value={moonrakerValue}
+        samples={procStats.cpuSamples} color="Blue" domainMax={100}
       />
-      <MiniChart
-        x={x}
-        y={miniY + 5}
-        width={width}
-        label="RPI Aw"
-        value={rpiAwake}
-        samples={klipper.rpiMcu.awakeSamples}
-        color="BrightMagenta"
-        domainMax={100}
+      <MiniChip
+        x={colX(2)} y={innerY + 1} width={chartW}
+        label="MCU Aw" value={mcuAwake}
+        samples={klipper.mainMcu.awakeSamples} color="Green" domainMax={100}
       />
-      <Text x={x} y={infoY} width={width} height={1} block>
-        <Text x={1} color="White">
-          {truncate(infoLine, Math.max(1, width - 2))}
-        </Text>
-      </Text>
-      {throttled ? (
-        <Text x={x} y={throttledY} width={width} height={1} block>
-          <Text x={1} color="Red" bold>
-            {truncate(`⚠ throttled: ${procStats.throttledFlags.join(', ')}`, width - 2)}
-          </Text>
-        </Text>
-      ) : (
-        <Text x={x} y={throttledY} width={width} height={1} block>
-          <Text x={0} color="BrightBlack" dim>
-            {' '.padEnd(width)}
-          </Text>
-        </Text>
-      )}
+      <MiniChip
+        x={colX(3)} y={innerY + 1} width={chartW}
+        label="RPI Aw" value={rpiAwake}
+        samples={klipper.rpiMcu.awakeSamples} color="BrightMagenta" domainMax={100}
+      />
+
+      <InfoCell x={colX(0)} y={innerY + 2} width={chartW} text={`Temp ${temp}`} />
+      <InfoCell
+        x={colX(1)} y={innerY + 2} width={chartW}
+        text={net ? `${net.name} ${fmtBandwidth(net.bandwidth)}` : '—'}
+      />
+      <InfoCell x={colX(2)} y={innerY + 2} width={chartW} text={`Up ${uptime}`} />
+      <InfoCell x={colX(3)} y={innerY + 2} width={chartW} text={`Conns ${conns}`} />
+
+      {/* Border drawn last so the side bars overwrite block-fill edges. */}
+      <PanelFrame
+        x={x}
+        y={y}
+        width={width}
+        height={SYSTEM_PANEL_HEIGHT}
+        title="System"
+        rightLabel={throttledLabel}
+        rightLabelColor="Red"
+      />
     </>
   );
 };
