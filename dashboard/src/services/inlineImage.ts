@@ -9,7 +9,72 @@
  * Detection (whether the host terminal supports the protocol) lives in
  * `services/terminalFeatures.ts` — `getGraphicsSupport().iterm2`. The
  * builder here is unconditional; callers gate emission on that signal.
+ *
+ * OSC writes go through a dedicated `/dev/tty` file descriptor opened at
+ * module load — separate from `process.stdout`, which react-curse owns
+ * for its cell-diff writes. The two fds both end up at the same TTY
+ * device so iTerm2 still sees everything in arrival order, but isolating
+ * the OSC traffic onto its own fd means:
+ *   - the RIS-stripping wrapper installed on `process.stdout.write`
+ *     (terminal.ts) never touches our image bytes, even when a future
+ *     buffer happens to contain an `\x1b c` pair that would be stripped
+ *     in the wrapper's string-path;
+ *   - writeSync to a TTY fd is synchronous and goes straight to the
+ *     kernel write buffer, so the whole OSC sequence (CSI cursor save +
+ *     position + 1337;File=… + CSI cursor restore) lands as one
+ *     contiguous block per call — no chance for libuv to split a large
+ *     payload mid-OSC and let another writer slip bytes between the
+ *     splits, which is the race that historically surfaced as an iTerm2
+ *     file-download widget popping over the dashboard.
  */
+import { openSync, writeSync } from 'node:fs';
+
+/**
+ * Dedicated write fd for OSC traffic.
+ *
+ * Opened lazily on first use. Falls back to `process.stdout.fd` if
+ * `/dev/tty` can't be opened (e.g. stdout has been redirected to a file
+ * or pipe and there's no controlling terminal). The fallback still
+ * benefits from the synchronous-write atomicity even if it doesn't get
+ * the fd isolation.
+ */
+let oscFd: number | undefined;
+const getOscFd = (): number => {
+  if (oscFd !== undefined) return oscFd;
+  try {
+    oscFd = openSync('/dev/tty', 'w');
+  } catch {
+    oscFd = process.stdout.fd;
+  }
+  return oscFd;
+};
+
+/**
+ * Synchronously write a complete payload to the OSC fd, looping until
+ * every byte has been accepted by the kernel. `writeSync` returns the
+ * number of bytes actually written and can be partial when the kernel
+ * TTY buffer is near-full; the loop handles that without giving up the
+ * event loop, so the whole sequence lands before any other writer can
+ * slip bytes in.
+ */
+const writeAtomic = (payload: string): void => {
+  const buf = Buffer.from(payload, 'utf8');
+  const fd = getOscFd();
+  let offset = 0;
+  while (offset < buf.length) {
+    try {
+      const n = writeSync(fd, buf, offset, buf.length - offset);
+      // `writeSync` returning 0 should be impossible on a writable TTY,
+      // but bail rather than spin if it ever happens.
+      if (n <= 0) return;
+      offset += n;
+    } catch {
+      // fd may be closed mid-shutdown; swallow so we don't crash the
+      // TUI right before exit.
+      return;
+    }
+  }
+};
 
 /**
  * Construct the iTerm2 native inline-image escape sequence for an image
@@ -83,9 +148,11 @@ export const buildIterm2ImageEscape = (
  */
 export const writeInlineImageAt = (escape: string, x: number, y: number): void => {
   // CSI s = save cursor, CSI <y>;<x> H = move cursor, image escape, CSI u = restore.
-  // One write call so the whole sequence is atomic — no chance for
-  // react-curse to slip a write between our position and our restore.
-  process.stdout.write(`\x1b[s\x1b[${y + 1};${x + 1}H${escape}\x1b[u`);
+  // One writeAtomic call so the whole sequence lands in a single
+  // contiguous kernel write — no chance for react-curse to slip a
+  // write between our position and our restore, and no chance for
+  // libuv to split a large image payload mid-OSC.
+  writeAtomic(`\x1b[s\x1b[${y + 1};${x + 1}H${escape}\x1b[u`);
 };
 
 /**
@@ -121,5 +188,7 @@ export const clearTerminalRect = (x: number, y: number, w: number, h: number): v
   for (let r = 0; r < h; r++) {
     out += `\x1b[${y + 1 + r};${x + 1}H${blank}`;
   }
-  process.stdout.write(out);
+  // Route the clear through the same atomic OSC fd so it lands relative
+  // to any inline-image emits that may have been queued just before.
+  writeAtomic(out);
 };

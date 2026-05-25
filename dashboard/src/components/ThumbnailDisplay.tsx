@@ -61,20 +61,31 @@ export const ThumbnailDisplay = ({
   width,
   height,
 }: ThumbnailDisplayProps) => {
-  // Re-emit the iTerm2 inline-image escape on **every render** (no deps
-  // array), so any re-render of the dashboard restamps the image and
-  // keeps it visible. The image cells live outside react-curse's virtual
-  // buffer, so without this they'd eventually be clobbered as react-curse
-  // diffs against its model.
+  // Re-emit the iTerm2 inline-image escape on **every render**. This is
+  // unfortunately the only reliable strategy with react-curse: react-curse
+  // rebuilds its virtual buffer from scratch on every render, then diffs
+  // cell-by-cell against the previous frame, and any modifier change on
+  // an unowned cell (e.g. a Text row shrinking and leaving "default
+  // attributes" where it used to write `{color: White}`) produces a
+  // cell-reset write that lands AFTER react-curse's commit but BEFORE
+  // our useLayoutEffect — except that further state updates can introduce
+  // *new* modifier diffs on cells that overlap the image, and any cell
+  // write iTerm2 receives invalidates the inline image at that cell.
+  // Re-stamping every render is how we counteract that.
   //
-  // The base64 encoding is cached per buffer / geometry — recomputed only
-  // when those actually change. That keeps the per-render cost to a tiny
-  // string concatenation + a stdout write of ~8 KB.
+  // The base64 encoding is cached per buffer / geometry so each render's
+  // cost is only a stdout write of the pre-built escape string. The
+  // write is bracketed with cursor save/restore inside
+  // `writeInlineImageAt` so react-curse's cursor-tracking stays correct.
   //
-  // The image emit is bracketed with cursor save/restore inside
-  // `writeInlineImageAt` so react-curse's cursor-tracking stays correct
-  // (otherwise its next cell writes target the wrong row/column,
-  // splattering other panels' content into our area).
+  // Known interaction: when both this and `WebcamPanel`'s per-frame
+  // re-stamp are active, two large OSC writes share stdout every frame.
+  // When the kernel TTY buffer is near-full, libuv can split a write into
+  // multiple syscalls and the two OSC sequences interleave, leaving
+  // iTerm2's parser in a half-state that surfaces as a phantom file-
+  // download widget at the top of the terminal. That's a separate bug
+  // — fixing it cleanly needs either an atomic writeSync path or a
+  // global serializing queue on stdout. Tracked separately.
   const escCacheRef = useRef<{
     buf: Buffer | null;
     w: number;
