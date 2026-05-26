@@ -15,12 +15,14 @@
   "dependencies": {
     "@jhyland87/moonraker-client": "workspace:*",
     "jpeg-js": "^0.4.4",
+    "js-yaml": "^4.1.0",
     "mjpeg-consumer": "^2.0.0",
     "react": "^19.1.1",
     "react-curse": "^1.0.23",
     "supports-terminal-graphics": "^0.1.0"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.7.0",
     "@types/react": "^19.1.11",
     "tsx": "^4.19.2",

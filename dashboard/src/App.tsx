@@ -3,7 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useInput, useSize } from 'react-curse';
 
 import { BedMeshPanel, computeBedMeshPanelHeight } from './components/BedMeshPanel';
+import { ConfigEditorModal } from './components/ConfigEditorModal';
 import { ConsolePanel } from './components/ConsolePanel';
+import type { ConfigUpdater } from './components/DashboardRoot';
 import { ErrorPanel, ERROR_PANEL_HEIGHT } from './components/ErrorPanel';
 import { FileBrowserModal } from './components/FileBrowserModal';
 import { HelpModal } from './components/HelpModal';
@@ -42,6 +44,13 @@ import { restoreTerminalNow } from './terminal';
 export interface AppProps {
   readonly client: MoonrakerClient;
   readonly config: DashboardConfig;
+  /**
+   * Hot-update + persist callback owned by {@link DashboardRoot}. Each
+   * call writes the new config to `~/.moonraker-dashboard/config.yaml`
+   * synchronously, then updates React state so the dashboard re-renders
+   * with the new values. Used by the in-TUI editor modal.
+   */
+  readonly setConfig: ConfigUpdater;
 }
 
 /**
@@ -81,7 +90,7 @@ const TABLE_BOTTOM_GAP = 1;
  * @returns The full dashboard view.
  * @source
  */
-export const App = ({ client, config }: AppProps) => {
+export const App = ({ client, config, setConfig }: AppProps) => {
   const { width, height } = useSize();
   const { sensors, status } = useMoonrakerSensors(client, config);
   const printStatus = usePrintStatus(client);
@@ -115,6 +124,7 @@ export const App = ({ client, config }: AppProps) => {
   const [webcamFullscreen, setWebcamFullscreen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
+  const [configEditorOpen, setConfigEditorOpen] = useState(false);
   const fileBrowser = useFileBrowser(client, config.fileBrowser);
 
   // ----- Auto-stream gate ------------------------------------------------
@@ -204,12 +214,14 @@ export const App = ({ client, config }: AppProps) => {
     fileBrowserOpen,
     webcamStreaming: webcam.mode === 'stream',
     webcamFullscreen,
+    configEditorOpen,
   };
   const hotkeyActions: HotkeyActions = {
     setHelpOpen,
     setBedMeshOpen,
     setWebcamOpen: toggleWebcamOpen,
     setFileBrowserOpen,
+    setConfigEditorOpen,
     toggleConsole,
     refreshBedMesh,
     webcamSnapshot,
@@ -332,7 +344,7 @@ export const App = ({ client, config }: AppProps) => {
         // Suppress while a modal is up — same reasoning as the inline
         // variant. The unmount cleanup blanks the image cells so the
         // modal repaints cleanly over them.
-        !helpOpen && !fileBrowserOpen && (
+        !helpOpen && !fileBrowserOpen && !configEditorOpen && (
           <WebcamPanel
             key="webcam-fullscreen"
             webcam={webcam}
@@ -352,7 +364,7 @@ export const App = ({ client, config }: AppProps) => {
             // over the modal. Passing `null` causes PrintStatusPanel to
             // skip mounting ThumbnailDisplay, and its unmount cleanup
             // clears the image cells before the modal renders on top.
-            thumbnail={helpOpen || fileBrowserOpen ? null : thumbnail.buffer}
+            thumbnail={helpOpen || fileBrowserOpen || configEditorOpen ? null : thumbnail.buffer}
             x={0}
             y={colStartY + ll('print-status').y}
             width={leftW}
@@ -391,7 +403,7 @@ export const App = ({ client, config }: AppProps) => {
               comment above. Unmounting the panel triggers its
               clearTerminalRect cleanup so the inline-image cells are
               blanked before the modal repaints over them. */}
-          {webcamOpen && !helpOpen && !fileBrowserOpen && (
+          {webcamOpen && !helpOpen && !fileBrowserOpen && !configEditorOpen && (
             <WebcamPanel
               key="webcam-inline"
               webcam={webcam}
@@ -453,6 +465,17 @@ export const App = ({ client, config }: AppProps) => {
           thumbnailCellW={config.fileBrowser.thumbnailCellW}
           thumbnailCellH={config.fileBrowser.thumbnailCellH}
           onClose={() => setFileBrowserOpen(false)}
+        />
+      )}
+
+      {/* --- Config editor modal --------------------------------------- */}
+      {configEditorOpen && (
+        <ConfigEditorModal
+          config={config}
+          setConfig={setConfig}
+          onClose={() => setConfigEditorOpen(false)}
+          termWidth={width}
+          termHeight={height}
         />
       )}
 

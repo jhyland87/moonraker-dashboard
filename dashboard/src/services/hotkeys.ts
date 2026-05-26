@@ -61,6 +61,8 @@ export interface HotkeyState {
   readonly webcamStreaming: boolean;
   /** Webcam is rendered fullscreen, covering every other panel. */
   readonly webcamFullscreen: boolean;
+  /** Config editor modal is up. Blocks every other app hotkey while open. */
+  readonly configEditorOpen: boolean;
 }
 
 /**
@@ -74,6 +76,7 @@ export interface HotkeyActions {
   readonly setBedMeshOpen: (updater: boolean | ((prev: boolean) => boolean)) => void;
   readonly setWebcamOpen: (updater: boolean | ((prev: boolean) => boolean)) => void;
   readonly setFileBrowserOpen: (updater: boolean | ((prev: boolean) => boolean)) => void;
+  readonly setConfigEditorOpen: (updater: boolean | ((prev: boolean) => boolean)) => void;
   /** Flip console visibility (open ↔ closed). Console is non-modal — view-mode is just another panel. */
   readonly toggleConsole: () => void;
   readonly refreshBedMesh: () => void;
@@ -172,7 +175,10 @@ export const buildHotkeys = (sensors: readonly SensorConfig[]): readonly Hotkey[
   // owns its own input loop, so all app hotkeys are gated off while it's
   // open — same treatment as the help modal.
   const noModal = (ctx: HotkeyContext): boolean =>
-    notTyping(ctx) && !ctx.state.helpOpen && !ctx.state.fileBrowserOpen;
+    notTyping(ctx) &&
+    !ctx.state.helpOpen &&
+    !ctx.state.fileBrowserOpen &&
+    !ctx.state.configEditorOpen;
 
   return [
     // ----- Always-on safety hatch ---------------------------------------
@@ -297,6 +303,15 @@ export const buildHotkeys = (sensors: readonly SensorConfig[]): readonly Hotkey[
       ownedBy: 'app',
       when: noModal,
       action: (ctx) => ctx.actions.setFileBrowserOpen(true),
+    },
+    {
+      id: 'open-config-editor',
+      keys: ['p', 'P'],
+      section: 'navigation',
+      description: 'Open config editor (preferences)',
+      ownedBy: 'app',
+      when: noModal,
+      action: (ctx) => ctx.actions.setConfigEditorOpen(true),
     },
 
     // ----- Quit ----------------------------------------------------------

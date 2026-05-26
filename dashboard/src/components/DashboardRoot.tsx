@@ -1,8 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useInput } from 'react-curse';
 
 import { App } from '../App';
 import type { DashboardConfig } from '../config/index';
+import { saveConfig as saveConfigToDisk } from '../config/index';
 import { useReconnectingClient } from '../hooks/useReconnectingClient';
 import { restoreTerminalNow } from '../terminal';
 import { LoadingDialog } from './LoadingDialog';
@@ -12,24 +13,58 @@ import { LoadingDialog } from './LoadingDialog';
  * @source
  */
 export interface DashboardRootProps {
-  readonly config: DashboardConfig;
+  /**
+   * Config read from `~/.moonraker-dashboard/config.yaml` (or the default
+   * on first launch). Used as the initial value of an internal `useState`
+   * — runtime edits via the in-TUI editor mutate that state and persist
+   * back to disk, so this prop only matters at mount.
+   */
+  readonly initialConfig: DashboardConfig;
 }
 
 /**
- * Top-level wrapper that gates the dashboard {@link App} on a successful
- * websocket connection. While the connection is being established (or
- * retried), the user sees a centered {@link LoadingDialog} and nothing
- * else; the dashboard's panels mount only after `phase === 'connected'`.
+ * Setter callback shape consumers receive for hot-updating config.
+ * Persists to YAML synchronously, then applies via React state.
  *
- * Ctrl-C is wired here too so the user can quit out of the loading
- * dialog without having to wait for the connection. Once the App is
- * rendered, its own `useInput` handler takes over.
+ * @source
+ */
+export type ConfigUpdater = (
+  next: DashboardConfig | ((prev: DashboardConfig) => DashboardConfig),
+) => void;
+
+/**
+ * Top-level wrapper that gates the dashboard {@link App} on a successful
+ * websocket connection, and owns the mutable {@link DashboardConfig}
+ * state so the in-TUI editor can hot-update it without a restart.
  *
  * @param props - See {@link DashboardRootProps}.
  * @returns Either the loading dialog or the full dashboard.
  * @source
  */
-export const DashboardRoot = ({ config }: DashboardRootProps) => {
+export const DashboardRoot = ({ initialConfig }: DashboardRootProps) => {
+  // Mutable config state — initialized from the YAML load, mutated by
+  // the editor modal via `setConfig`. The setter persists to disk on
+  // every change so the YAML file stays in sync with the running app.
+  const [config, setConfigState] = useState<DashboardConfig>(initialConfig);
+
+  const setConfig: ConfigUpdater = useCallback((updater) => {
+    setConfigState((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      // Persist asynchronously-ish (sync I/O, but in a microtask so we
+      // don't block the React state update). If the write throws, log
+      // and keep going — the in-memory state is still updated, the
+      // user just has to retry to persist.
+      try {
+        saveConfigToDisk(next);
+      } catch (err) {
+        process.stderr.write(
+          `[config] saveConfig failed: ${(err as Error).message}\n`,
+        );
+      }
+      return next;
+    });
+  }, []);
+
   const { phase, client, attempt, lastError, wasEverConnected } = useReconnectingClient({
     config: config.client,
     retryIntervalMs: config.startup.retryIntervalMs,
@@ -78,5 +113,12 @@ export const DashboardRoot = ({ config }: DashboardRootProps) => {
     );
   }
 
-  return <App key={sessionRef.current} client={client} config={config} />;
+  return (
+    <App
+      key={sessionRef.current}
+      client={client}
+      config={config}
+      setConfig={setConfig}
+    />
+  );
 };
