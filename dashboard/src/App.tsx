@@ -359,11 +359,18 @@ export const App = ({ client, config, setConfig }: AppProps) => {
           {/* --- Left column ----------------------------------------- */}
           <PrintStatusPanel
             status={printStatus}
-            // Suppress the inline thumbnail while the help modal is open —
-            // its re-emit-every-render layoutEffect would otherwise paint
+            // Suppress the inline thumbnail while a modal is open — its
+            // re-emit-every-render layoutEffect would otherwise paint
             // over the modal. Passing `null` causes PrintStatusPanel to
             // skip mounting ThumbnailDisplay, and its unmount cleanup
             // clears the image cells before the modal renders on top.
+            //
+            // ThumbnailDisplay itself is wrapped in React.memo (see its
+            // doc), so during normal operation the OSC emits exactly
+            // once on mount + once per genuine prop change. That's
+            // what keeps it from racing the webcam's per-frame OSC
+            // (which was triggering iTerm2's phantom file-download
+            // widget on every parser-state collision).
             thumbnail={helpOpen || fileBrowserOpen || configEditorOpen ? null : thumbnail.buffer}
             x={0}
             y={colStartY + ll('print-status').y}

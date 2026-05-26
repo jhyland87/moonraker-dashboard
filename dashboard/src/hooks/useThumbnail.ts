@@ -1,4 +1,7 @@
 import type { MoonrakerClient } from '@jhyland87/moonraker-client';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { useEffect, useRef, useState } from 'react';
 
 import {
@@ -6,6 +9,26 @@ import {
   fetchThumbnailPng,
   pickBestThumbnail,
 } from '../services/thumbnail';
+
+/**
+ * Directory the hook writes fetched thumbnails into. Lives under the OS
+ * tmpdir so cleanup is automatic across reboots. Same path every time
+ * (one file per print, overwritten) so accumulated junk stays bounded.
+ *
+ * Exposed as a constant so users / diagnostics can inspect the PNG
+ * iTerm2 is actually being handed.
+ */
+const THUMB_DIR = join(tmpdir(), 'moonraker-dashboard');
+
+/**
+ * Absolute path of the on-disk PNG copy of the current thumbnail.
+ * Returned alongside the in-memory buffer so the renderer (or external
+ * tooling) can reference the file when buffer-based emission proves
+ * unreliable. Same name every fetch — overwritten in place.
+ *
+ * @source
+ */
+export const getThumbnailPath = (): string => join(THUMB_DIR, 'thumbnail.png');
 
 /**
  * Return shape of {@link useThumbnail}. `buffer` is the raw PNG bytes of
@@ -94,6 +117,19 @@ export const useThumbnail = (
         const url = buildThumbnailUrl(client, thumb.relative_path);
         const png = await fetchThumbnailPng(url, ctrl.signal);
         if (cancelled || ctrl.signal.aborted) return;
+        // Persist a copy on disk under $TMPDIR/moonraker-dashboard/.
+        // Useful for diagnostics (verify the PNG iTerm2 receives is
+        // actually a valid image) and as a foothold for future
+        // file-based render paths. Best-effort — a write failure
+        // shouldn't break the dashboard.
+        try {
+          mkdirSync(THUMB_DIR, { recursive: true });
+          writeFileSync(getThumbnailPath(), png);
+        } catch (err) {
+          process.stderr.write(
+            `[useThumbnail] tmp write failed: ${(err as Error).message}\n`,
+          );
+        }
         setBuffer(png);
       } catch (err) {
         if (cancelled || ctrl.signal.aborted) return;

@@ -87,16 +87,27 @@ const writeAtomic = (payload: string): void => {
  * for a 100×100 thumbnail) and let the terminal pick the smaller of
  * the two dimensions.
  *
+ * `name=` is always emitted (base64-encoded filename, defaulting to
+ * `'image'`). iTerm2's reference utility `imgcat` always sends `name=`,
+ * and without it iTerm2 falls back to a generic file-download widget
+ * under some load conditions instead of rendering inline — exactly the
+ * phantom popup we were tracking. Passing a stable extension hint
+ * (e.g. `'thumbnail.png'`) lets iTerm2 short-circuit the file-type
+ * sniff and stay in inline-render mode.
+ *
  * @param buf - Raw image bytes (PNG / JPEG / GIF).
  * @param cellW - Width to claim, in terminal cells.
  * @param cellH - Height to claim, in terminal cells.
+ * @param name - Filename hint (e.g. `'thumbnail.png'`, `'webcam.jpg'`).
+ *   iTerm2 base64-encodes it itself in some clients; we encode here so
+ *   the escape is well-formed across emitters. Defaults to `'image'`.
  * @returns The complete OSC 1337 escape — write directly to stdout
  *   (preceded by a CSI H cursor-move sequence to position it).
  *
  * @example
  * ```ts
  * const cursorEsc = `\x1b[${y + 1};${x + 1}H`;
- * const imgEsc = buildIterm2ImageEscape(buf, 20, 10);
+ * const imgEsc = buildIterm2ImageEscape(buf, 20, 10, 'thumbnail.png');
  * process.stdout.write(cursorEsc + imgEsc);
  * ```
  * @source
@@ -105,8 +116,10 @@ export const buildIterm2ImageEscape = (
   buf: Buffer,
   cellW: number,
   cellH: number,
+  name: string = 'image',
 ): string => {
   const args = [
+    `name=${Buffer.from(name, 'utf8').toString('base64')}`,
     'inline=1',
     `size=${buf.byteLength}`,
     `width=${cellW}`,

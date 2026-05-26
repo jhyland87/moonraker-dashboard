@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef } from 'react';
 import { Text } from 'react-curse';
 
 import {
@@ -44,17 +44,19 @@ const USE_INLINE_IMAGES = getGraphicsSupport().iterm2;
  * the panel unmounts (e.g. between prints) so the next-frame content
  * doesn't get ghosted by a stale thumbnail.
  *
- * @param props - See {@link ThumbnailDisplayProps}.
- * @returns The component element (or `null` when nothing to render).
- *
- * @example
- * ```tsx
- * const thumb = useThumbnail(client, status.filename);
- * <ThumbnailDisplay buffer={thumb.buffer} x={50} y={2} width={10} height={5} />
- * ```
- * @source
+ * Wrapped in {@link memo} at the export site. Every parent render
+ * (sensor tick, MJPEG frame, status update, etc.) would otherwise
+ * trigger this component's render — and its no-deps `useLayoutEffect`
+ * would re-emit the OSC 1337 sequence each time. That per-frame restamp
+ * is what was racing with the webcam's 30 KB OSC payload and surfacing
+ * as iTerm2's phantom file-download widget. With memo, the function
+ * only runs (and the effect only fires) when one of `buffer`, `x`, `y`,
+ * `width`, `height` actually changes — typically once on mount, then
+ * again only on modal-overlay toggles or terminal resize. The image
+ * cells stay painted in iTerm2's image layer between emits, so the
+ * thumbnail remains visible without continuous re-stamping.
  */
-export const ThumbnailDisplay = ({
+const ThumbnailDisplayImpl = ({
   buffer,
   x,
   y,
@@ -100,11 +102,39 @@ export const ThumbnailDisplay = ({
         buf: buffer,
         w: width,
         h: height,
-        esc: buildIterm2ImageEscape(buffer, width, height),
+        esc: buildIterm2ImageEscape(buffer, width, height, 'thumbnail.png'),
       };
     }
     writeInlineImageAt(escCacheRef.current.esc, x, y);
   });
+
+  // Heartbeat re-emit. The component is wrapped in memo, so the
+  // useLayoutEffect above fires only when buffer/x/y/width/height
+  // actually change — typically once on mount, then never. That's
+  // not enough in practice: empirically the image disappears within
+  // a second or so when the webcam is streaming. The exact cause is
+  // either (a) iTerm2 evicting older inline images when many new
+  // ones come in, or (b) react-curse's cursor traversal during a
+  // diff write touching the thumbnail's cells in a way iTerm2
+  // interprets as "drop the image here." Either way, periodically
+  // re-emitting the OSC restores the image without triggering the
+  // phantom-popup race (the rate is slow enough that any single
+  // emit's collision with a webcam frame is unlikely).
+  //
+  // 2 seconds is the smallest interval where the popup hasn't
+  // appeared in extended testing while still keeping the thumbnail
+  // visually stable. The timer fires from inside a useEffect so it
+  // pauses naturally when the component unmounts (modal opens,
+  // panel hides, terminal cleanup) and clears any pending fire.
+  useEffect(() => {
+    if (!USE_INLINE_IMAGES || !buffer || width < 1 || height < 1) return;
+    const interval = setInterval(() => {
+      const cache = escCacheRef.current;
+      if (cache.esc === '') return;
+      writeInlineImageAt(cache.esc, x, y);
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [buffer, x, y, width, height]);
 
   // Track current geometry so the unmount cleanup knows which rect to
   // blank. Writing to a ref during render is the React-blessed pattern
@@ -139,3 +169,18 @@ export const ThumbnailDisplay = ({
 
   return null;
 };
+
+/**
+ * Memoized export — see {@link ThumbnailDisplayImpl}'s doc for why.
+ *
+ * Default shallow comparison is correct here: every prop is either a
+ * primitive number (`x`, `y`, `width`, `height`) or a reference-stable
+ * `Buffer | null` from `useThumbnail`'s `useState`. The Buffer
+ * reference only changes when a new thumbnail is fetched (filename
+ * change between prints) or when the App layer flips it to `null` to
+ * suppress emission during a modal overlay. Both cases legitimately
+ * need a re-emit, and memo's default comparator catches them.
+ *
+ * @source
+ */
+export const ThumbnailDisplay = memo(ThumbnailDisplayImpl);

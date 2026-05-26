@@ -126,7 +126,7 @@ export const WebcamPanel = ({ webcam, x, y, width, height }: WebcamPanelProps) =
         buf: buffer,
         w: innerW,
         h: innerH,
-        esc: buildIterm2ImageEscape(buffer, innerW, innerH),
+        esc: buildIterm2ImageEscape(buffer, innerW, innerH, 'webcam.jpg'),
       };
     }
     writeInlineImageAt(escCacheRef.current.esc, innerX, innerY);
