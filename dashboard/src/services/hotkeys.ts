@@ -84,6 +84,22 @@ export interface HotkeyActions {
   readonly webcamToggleStream: () => void;
   /** Flip the webcam between inline panel and fullscreen overlay. */
   readonly toggleWebcamFullscreen: () => void;
+  /**
+   * Force react-curse to do a full repaint on the next render —
+   * useful after something painted cells outside react-curse's
+   * virtual buffer (inline-image OSCs, sixel pixels) and left
+   * those cells in a state react-curse's diff doesn't recognize.
+   */
+  readonly forceRedraw: () => void;
+  /**
+   * Diagnostic: blank the visible screen at the TTY level without
+   * touching react-curse's virtual buffer. The next render's diff
+   * sees no changes for cells whose content matches what react-curse
+   * last wrote, so only cells that actually change between renders
+   * get repainted — handy for visualizing what react-curse is
+   * actively writing each frame. Pair with `forceRedraw` to restore.
+   */
+  readonly diagnosticClear: () => void;
   readonly toggleSensorVisibility: (toggleKey: string) => void;
   /** Tear down the WS client + alt-screen + process.exit. */
   readonly quit: () => void;
@@ -191,6 +207,41 @@ export const buildHotkeys = (sensors: readonly SensorConfig[]): readonly Hotkey[
       ownedBy: 'app',
       when: () => true,
       action: (ctx) => ctx.actions.quit(),
+    },
+
+    // ----- Diagnostic: clear screen + force redraw ----------------------
+    // Ctrl-L blanks the TTY *without* touching react-curse's prevBuffer,
+    // so the next render's diff redraws only cells that genuinely
+    // changed between frames. Useful for figuring out which panels are
+    // animating and which are static. Ctrl-R restores the full screen
+    // by emitting a synthetic `resize` event, which sets react-curse's
+    // `isResized` flag — the next render is then a full repaint that
+    // ignores prevBuffer.
+    //
+    // Both gated on `notTyping` only (no modal-open block) — they're
+    // diagnostic affordances that should work even when overlays are
+    // up; the side effect is purely visual and clears itself on the
+    // next render.
+    {
+      id: 'diagnostic-clear',
+      keys: ['\x0c'],
+      displayKey: 'Ctrl-L',
+      section: 'navigation',
+      description:
+        'Diagnostic: blank screen (only re-drawn cells will reappear)',
+      ownedBy: 'app',
+      when: notTyping,
+      action: (ctx) => ctx.actions.diagnosticClear(),
+    },
+    {
+      id: 'force-redraw',
+      keys: ['\x12'],
+      displayKey: 'Ctrl-R',
+      section: 'navigation',
+      description: 'Force full screen repaint',
+      ownedBy: 'app',
+      when: notTyping,
+      action: (ctx) => ctx.actions.forceRedraw(),
     },
 
     // ----- Help modal toggle (works even when other modals own things) --

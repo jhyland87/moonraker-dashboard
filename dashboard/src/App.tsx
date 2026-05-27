@@ -17,6 +17,7 @@ import { TemperatureChartPanel } from './components/TemperatureChartPanel';
 import { WebcamPanel } from './components/WebcamPanel';
 import type { DashboardConfig } from './config/index';
 import { useBedMesh } from './hooks/useBedMesh';
+import { useDashboardSelfStats } from './hooks/useDashboardSelfStats';
 import { useGcodeConsole } from './hooks/useGcodeConsole';
 import { useGcodeHelp } from './hooks/useGcodeHelp';
 import { useKlipperStats } from './hooks/useKlipperStats';
@@ -102,6 +103,7 @@ export const App = ({ client, config, setConfig }: AppProps) => {
   const webcam = useWebcam(config.webcam);
   const procStats = useMachineProcStats(client);
   const klipperStats = useKlipperStats(client);
+  const selfStats = useDashboardSelfStats();
   // Thumbnail for the currently-loaded gcode (whatever print_stats.filename
   // says). Updates automatically when the filename changes between prints.
   const thumbnail = useThumbnail(client, printStatus.filename);
@@ -187,6 +189,49 @@ export const App = ({ client, config, setConfig }: AppProps) => {
     (): void => setWebcamFullscreen((prev) => !prev),
     [],
   );
+
+  // ----- Diagnostic clear + force-redraw ---------------------------------
+  // `renderTick` is a no-op state used to force a re-render of App after
+  // we emit a synthetic resize event. react-curse listens to `process.
+  // stdout.on('resize')` and flips its `isResized` flag, but the flag is
+  // only consulted on the next render — so we need to schedule one.
+  // The state value itself is unused in JSX; React schedules a render
+  // for any setState call.
+  const [renderTick, setRenderTick] = useState(0);
+  void renderTick;
+  const forceRedraw = useCallback((): void => {
+    // Synthetic resize. react-curse's Term sets isResized=true on this
+    // event; its next render sets `full = true` and writes every cell
+    // regardless of whether it matches prevBuffer. That repaints
+    // anything cells outside react-curse's awareness (inline-image
+    // OSCs, sixel pixels) had left in a stale state.
+    process.stdout.emit('resize');
+    setRenderTick((t) => t + 1);
+  }, []);
+  const diagnosticClear = useCallback((): void => {
+    // CSI 2J = clear entire display, CSI H = cursor home. Writes
+    // directly to stdout (sync on TTY) without invalidating
+    // react-curse's prevBuffer — its next diff still skips
+    // "unchanged" cells, so only animating cells get redrawn. Pair
+    // with Ctrl-R to restore.
+    process.stdout.write('\x1b[2J\x1b[H');
+  }, []);
+
+  // Auto force-redraw when leaving webcam fullscreen. While fullscreen
+  // is on the JPEG lives in iTerm2's image layer and react-curse has
+  // no record of those cells; on exit, its diff thinks every cell
+  // matches prevBuffer (whatever was there before fullscreen mounted),
+  // so the unmount cleanup blanks the cells and the new render writes
+  // nothing — leaving the screen mostly empty except for currently-
+  // updating values. `forceRedraw` repaints everything.
+  const prevFullscreenRef = useRef(webcamFullscreen);
+  useEffect(() => {
+    const wasFullscreen = prevFullscreenRef.current;
+    prevFullscreenRef.current = webcamFullscreen;
+    if (wasFullscreen && !webcamFullscreen) {
+      forceRedraw();
+    }
+  }, [webcamFullscreen, forceRedraw]);
   // Wrapper around setWebcamOpen that also clears fullscreen on close —
   // prevents a stale fullscreen flag from suppressing the rest of the
   // UI the next time the panel is opened.
@@ -227,6 +272,8 @@ export const App = ({ client, config, setConfig }: AppProps) => {
     webcamSnapshot,
     webcamToggleStream,
     toggleWebcamFullscreen,
+    forceRedraw,
+    diagnosticClear,
     toggleSensorVisibility,
     quit,
   };
@@ -440,6 +487,7 @@ export const App = ({ client, config, setConfig }: AppProps) => {
           <SystemStatsPanel
             procStats={procStats}
             klipper={klipperStats}
+            selfStats={selfStats}
             x={0}
             y={systemY}
             width={width}

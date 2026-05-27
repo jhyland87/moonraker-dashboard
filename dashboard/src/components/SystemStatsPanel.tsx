@@ -1,6 +1,7 @@
 import { Text } from 'react-curse';
 
 import { PanelFrame } from './PanelFrame';
+import type { DashboardSelfStats } from '../hooks/useDashboardSelfStats';
 import type { KlipperStats } from '../hooks/useKlipperStats';
 import type { MachineProcStats, TimedSample } from '../hooks/useMachineProcStats';
 import {
@@ -17,16 +18,18 @@ import {
  *
  * ```
  * ┌─ System ─────────────────────────────────── ⚠ throttled: <flags> ─┐
- * │[Klipper 5.8%]▆▅▆█  [SysLd 2.5]▂▃▄  [MCU 2.00%]▁▂  [RPI 3.6%]▆▇▆▅   │
- * │[Mem 99/209MB]▄▄▄▄  [MR 27.4%]▂▂▃   [MCU Aw 0.3%]▁ [RPI Aw 0.0%]▁    │
+ * │[Klipper 5.8%]▆▅▆█  [SysLd 2.5]▂▃▄  [MCU 2.00%]▁▂   [RPI 3.6%]▆▇▆▅ │
+ * │[Mem 99/209MB]▄▄▄▄  [MR 27.4%]▂▂▃   [DashMem 84MB]▃ [DashCPU 1.2%]▁│
  * │ Temp 45 °C        wlan0 2.3 MB/s    Up 3d 3h       Conns 20       │
  * └────────────────────────────────────────────────────────────────────┘
  * ```
  *
- * Eight metric chips arranged in a 2×4 grid, plus a 4-column info row.
- * The throttled warning surfaces in the top border's right slot only when
- * the machine actually reports throttling — costs no rows in the steady
- * state. Total height is fixed at {@link SYSTEM_PANEL_HEIGHT}.
+ * Top row is Klipper-host stats; second row mixes Klipper memory + the
+ * dashboard process's own RSS and CPU%. Info row carries point-in-time
+ * values (temp, network, uptime, conns). The throttled warning surfaces
+ * in the top border's right slot only when the machine actually reports
+ * throttling — costs no rows in the steady state. Total height is fixed
+ * at {@link SYSTEM_PANEL_HEIGHT}.
  */
 
 const HEADER_ROWS = 1; // top border row
@@ -101,6 +104,8 @@ const pickNetwork = (
 interface SystemStatsPanelProps {
   readonly procStats: MachineProcStats;
   readonly klipper: KlipperStats;
+  /** Self-monitoring stats for the dashboard process itself. */
+  readonly selfStats: DashboardSelfStats;
   readonly x: number;
   readonly y: number;
   readonly width: number;
@@ -179,6 +184,7 @@ const InfoCell = ({
 export const SystemStatsPanel = ({
   procStats,
   klipper,
+  selfStats,
   x,
   y,
   width,
@@ -215,9 +221,13 @@ export const SystemStatsPanel = ({
       : '—';
   const moonrakerValue = fmtPct(procStats.cpuPct, 1);
   const mcuLoad = fmtPct(klipper.mainMcu.load, 2);
-  const mcuAwake = fmtPct(klipper.mainMcu.awakePct, 2);
   const rpiLoad = fmtPct(klipper.rpiMcu.load, 2);
-  const rpiAwake = fmtPct(klipper.rpiMcu.awakePct, 2);
+
+  // Dashboard self-monitoring. RSS is shown rounded to whole MB; CPU%
+  // is the single-process value (cap-friendly domain of 100% since
+  // Node is single-threaded for our purposes).
+  const selfMemValue = `${selfStats.currentMemMb.toFixed(0)}MB`;
+  const selfCpuValue = `${selfStats.currentCpuPct.toFixed(1)}%`;
 
   // Info row.
   const temp = procStats.cpuTemp !== undefined ? `${procStats.cpuTemp.toFixed(1)}°C` : '—';
@@ -273,13 +283,14 @@ export const SystemStatsPanel = ({
       />
       <MiniChip
         x={colX(2)} y={innerY + 1} width={chartW}
-        label="MCU Aw" value={mcuAwake}
-        samples={klipper.mainMcu.awakeSamples} color="Green" domainMax={100}
+        label="DashMem" value={selfMemValue}
+        samples={selfStats.memSamples} color="Green"
+        domainMax={Math.max(100, ...selfStats.memSamples.map((s) => s.value))}
       />
       <MiniChip
         x={colX(3)} y={innerY + 1} width={chartW}
-        label="RPI Aw" value={rpiAwake}
-        samples={klipper.rpiMcu.awakeSamples} color="BrightMagenta" domainMax={100}
+        label="DashCPU" value={selfCpuValue}
+        samples={selfStats.cpuSamples} color="BrightMagenta" domainMax={100}
       />
 
       <InfoCell x={colX(0)} y={innerY + 2} width={chartW} text={`Temp ${temp}`} />

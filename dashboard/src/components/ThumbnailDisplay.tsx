@@ -63,31 +63,14 @@ const ThumbnailDisplayImpl = ({
   width,
   height,
 }: ThumbnailDisplayProps) => {
-  // Re-emit the iTerm2 inline-image escape on **every render**. This is
-  // unfortunately the only reliable strategy with react-curse: react-curse
-  // rebuilds its virtual buffer from scratch on every render, then diffs
-  // cell-by-cell against the previous frame, and any modifier change on
-  // an unowned cell (e.g. a Text row shrinking and leaving "default
-  // attributes" where it used to write `{color: White}`) produces a
-  // cell-reset write that lands AFTER react-curse's commit but BEFORE
-  // our useLayoutEffect — except that further state updates can introduce
-  // *new* modifier diffs on cells that overlap the image, and any cell
-  // write iTerm2 receives invalidates the inline image at that cell.
-  // Re-stamping every render is how we counteract that.
-  //
-  // The base64 encoding is cached per buffer / geometry so each render's
-  // cost is only a stdout write of the pre-built escape string. The
-  // write is bracketed with cursor save/restore inside
-  // `writeInlineImageAt` so react-curse's cursor-tracking stays correct.
-  //
-  // Known interaction: when both this and `WebcamPanel`'s per-frame
-  // re-stamp are active, two large OSC writes share stdout every frame.
-  // When the kernel TTY buffer is near-full, libuv can split a write into
-  // multiple syscalls and the two OSC sequences interleave, leaving
-  // iTerm2's parser in a half-state that surfaces as a phantom file-
-  // download widget at the top of the terminal. That's a separate bug
-  // — fixing it cleanly needs either an atomic writeSync path or a
-  // global serializing queue on stdout. Tracked separately.
+  // Emit the iTerm2 inline-image escape. Memo at the export site
+  // gates this effect to genuine prop changes (mount, modal toggle,
+  // resize), so this is effectively a "stamp once per state change"
+  // path — not a per-render restamp. The encoded escape string is
+  // cached per buffer/geometry so prop-stable renders cost nothing
+  // beyond the stdout write itself. `writeInlineImageAt` brackets
+  // the emit with cursor save/restore to keep react-curse's
+  // cursor-tracking accurate.
   const escCacheRef = useRef<{
     buf: Buffer | null;
     w: number;
@@ -108,32 +91,20 @@ const ThumbnailDisplayImpl = ({
     writeInlineImageAt(escCacheRef.current.esc, x, y);
   });
 
-  // Heartbeat re-emit. The component is wrapped in memo, so the
-  // useLayoutEffect above fires only when buffer/x/y/width/height
-  // actually change — typically once on mount, then never. That's
-  // not enough in practice: empirically the image disappears within
-  // a second or so when the webcam is streaming. The exact cause is
-  // either (a) iTerm2 evicting older inline images when many new
-  // ones come in, or (b) react-curse's cursor traversal during a
-  // diff write touching the thumbnail's cells in a way iTerm2
-  // interprets as "drop the image here." Either way, periodically
-  // re-emitting the OSC restores the image without triggering the
-  // phantom-popup race (the rate is slow enough that any single
-  // emit's collision with a webcam frame is unlikely).
-  //
-  // 2 seconds is the smallest interval where the popup hasn't
-  // appeared in extended testing while still keeping the thumbnail
-  // visually stable. The timer fires from inside a useEffect so it
-  // pauses naturally when the component unmounts (modal opens,
-  // panel hides, terminal cleanup) and clears any pending fire.
+  // One-shot re-stamp 200ms after mount. The post-mount render flurry
+  // (sensor tick, elapsed-time, etc.) produces diff writes near the
+  // image cells that can drop the inline image; after the flurry
+  // settles those cells stay static (verified via Ctrl-L), so a
+  // single delayed restamp is sufficient. No clearTimeout — a stale
+  // fire after unmount is harmless because whatever replaced the
+  // panel overwrites the cells on its next render.
   useEffect(() => {
     if (!USE_INLINE_IMAGES || !buffer || width < 1 || height < 1) return;
-    const interval = setInterval(() => {
+    setTimeout(() => {
       const cache = escCacheRef.current;
       if (cache.esc === '') return;
       writeInlineImageAt(cache.esc, x, y);
-    }, 2000);
-    return () => clearInterval(interval);
+    }, 200);
   }, [buffer, x, y, width, height]);
 
   // Track current geometry so the unmount cleanup knows which rect to
